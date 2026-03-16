@@ -95,6 +95,8 @@ impl OrderExecutor for PaperExecutor {
         size: Decimal,
     ) -> Result<OrderId> {
         let mut state = self.state.lock().await;
+        // In simulation, we deduct based on a tracked mid price.
+        // If mid_price is not updated dynamically, this assumes $0.50
         let cost = self.mid_price * size;
 
         if side == Side::Buy && state.balance < cost {

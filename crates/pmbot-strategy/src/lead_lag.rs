@@ -15,7 +15,7 @@ use tracing::debug;
 
 use pmbot_core::messages::{Signal, StrategyMetrics, WorldState};
 use pmbot_core::types::{
-    ExitReason, FillEvent, MarketId, MarketInfo, PositionId, Side, SignalId, Symbol,
+    ExitReason, FillEvent, MarketId, MarketInfo, Side, SignalId, Symbol,
 };
 
 use crate::traits::Strategy;

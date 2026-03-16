@@ -1,10 +1,7 @@
 //! Fair-value strategy using Black-Scholes pricing for binary options.
 
-use std::collections::HashMap;
 use std::time::Duration;
 
-use anyhow::Result;
-use chrono::{DateTime, Utc};
 use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
@@ -12,7 +9,7 @@ use tracing::{debug, info};
 
 use pmbot_core::messages::{Signal, StrategyMetrics, WorldState};
 use pmbot_core::types::{
-    ExitReason, FillEvent, MarketId, MarketInfo, PositionId, Side, SignalId, Symbol,
+    ExitReason, FillEvent, MarketId, MarketInfo, Side, SignalId, Symbol,
 };
 
 use crate::traits::Strategy;
@@ -55,7 +52,7 @@ pub struct FairValue {
     /// Minimum remaining time to expiry before the strategy will trade.
     min_time_to_expiry: Duration,
     /// Minimum absolute edge (|fv - market|) to enter.
-    min_edge: Decimal,
+    min_activation_edge: Decimal,
     /// External symbol to use for spot price (e.g., BTCUSDT).
     anchor_symbol: Symbol,
     /// The cached anchor price (strike price at market entry).
@@ -73,12 +70,12 @@ impl FairValue {
     pub fn new(
         vol_multiplier: Decimal,
         min_time_to_expiry_secs: u64,
-        min_edge: Decimal,
+        min_activation_edge: Decimal,
     ) -> Self {
         Self {
             vol_multiplier,
             min_time_to_expiry: Duration::from_secs(min_time_to_expiry_secs),
-            min_edge,
+            min_activation_edge,
             anchor_symbol: Symbol("BTCUSDT".into()),
             anchor_price: None,
             state: FairValueState::Watching,
@@ -102,9 +99,7 @@ impl FairValue {
         )
     }
 
-    fn state_name(&self) -> String {
-        self.state.name().to_string()
-    }
+
 }
 
 impl Strategy for FairValue {
@@ -187,7 +182,7 @@ impl Strategy for FairValue {
         match &self.state {
             FairValueState::Watching => {
                 // 8. Enter if edge exceeds minimum.
-                if edge > self.min_edge {
+                if edge > self.min_activation_edge {
                     let side = if fair_value > market_price {
                         Side::Buy
                     } else {
@@ -231,8 +226,8 @@ impl Strategy for FairValue {
                 signal_id,
                 entry_fv: _,
             } => {
-                // 9. Exit on convergence: edge drops below min_edge / 2.
-                let exit_threshold = self.min_edge / dec!(2);
+                // 9. Exit on convergence: edge drops below min_activation_edge / 2.
+                let exit_threshold = self.min_activation_edge / dec!(2);
                 if edge < exit_threshold {
                     let original_signal_id = *signal_id;
                     self.state = FairValueState::Watching;
@@ -260,7 +255,7 @@ impl Strategy for FairValue {
                     entry_fv: *entry_fv,
                 };
             }
-        } else if let FairValueState::InPosition { signal_id, .. } = &self.state {
+        } else if let FairValueState::InPosition { signal_id: _, .. } = &self.state {
             // Check if this was our exit fill (we don't track the exit signal_id yet, but let's assume if it matches it's ours)
             // Wait, the exit SignalId is new. 
             // Better logic: if we are InPosition and get a fill for the SAME original signal_id but opposite side?
@@ -298,8 +293,8 @@ impl Strategy for FairValue {
                     format!("{:.2}", self.vol_multiplier),
                 ),
                 (
-                    "min_edge",
-                    format!("{:.2}", self.min_edge),
+                    "min_activation_edge",
+                    format!("{:.2}", self.min_activation_edge),
                 ),
             ],
         }
@@ -311,7 +306,6 @@ mod tests {
     use super::*;
     use pmbot_core::messages::MarketSnapshot;
     use pmbot_core::types::{PricePoint, SpotPrice};
-    use std::collections::HashMap;
     use std::sync::Arc;
 
     fn ts(secs_offset: i64) -> DateTime<Utc> {

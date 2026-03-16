@@ -389,6 +389,8 @@ pub struct FairValueConfig {
     pub min_time_to_expiry_secs: u64,
     #[serde(default = "default_vol_multiplier")]
     pub vol_multiplier: Decimal,
+    #[serde(default = "default_fv_min_activation_edge")]
+    pub min_activation_edge: Decimal,
 }
 
 impl Default for FairValueConfig {
@@ -397,6 +399,7 @@ impl Default for FairValueConfig {
             enabled: true,
             min_time_to_expiry_secs: default_min_time_to_expiry_secs(),
             vol_multiplier: default_vol_multiplier(),
+            min_activation_edge: default_fv_min_activation_edge(),
         }
     }
 }
@@ -406,6 +409,9 @@ fn default_min_time_to_expiry_secs() -> u64 {
 }
 fn default_vol_multiplier() -> Decimal {
     Decimal::ONE
+}
+fn default_fv_min_activation_edge() -> Decimal {
+    Decimal::new(5, 2) // 0.05
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -418,6 +424,8 @@ pub struct FlashCrashConfig {
     pub lookback_secs: u64,
     #[serde(default = "default_reversion_target")]
     pub reversion_target: Decimal,
+    #[serde(default = "default_min_recovery_imbalance")]
+    pub min_recovery_imbalance: Decimal,
 }
 
 impl Default for FlashCrashConfig {
@@ -427,6 +435,7 @@ impl Default for FlashCrashConfig {
             drop_threshold: default_drop_threshold(),
             lookback_secs: default_lookback_secs(),
             reversion_target: default_reversion_target(),
+            min_recovery_imbalance: default_min_recovery_imbalance(),
         }
     }
 }
@@ -440,6 +449,9 @@ fn default_lookback_secs() -> u64 {
 fn default_reversion_target() -> Decimal {
     Decimal::new(5, 1) // 0.5
 }
+fn default_min_recovery_imbalance() -> Decimal {
+    Decimal::new(1, 1) // 0.1
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BookImbalanceConfig {
@@ -449,6 +461,10 @@ pub struct BookImbalanceConfig {
     pub imbalance_threshold: Decimal,
     #[serde(default = "default_imbalance_levels")]
     pub levels: usize,
+    #[serde(default = "default_momentum_window")]
+    pub momentum_window: usize,
+    #[serde(default = "default_bi_min_activation_edge")]
+    pub min_activation_edge: Decimal,
 }
 
 impl Default for BookImbalanceConfig {
@@ -457,6 +473,8 @@ impl Default for BookImbalanceConfig {
             enabled: false,
             imbalance_threshold: default_imbalance_threshold(),
             levels: default_imbalance_levels(),
+            momentum_window: default_momentum_window(),
+            min_activation_edge: default_bi_min_activation_edge(),
         }
     }
 }
@@ -466,6 +484,12 @@ fn default_imbalance_threshold() -> Decimal {
 }
 fn default_imbalance_levels() -> usize {
     5
+}
+fn default_momentum_window() -> usize {
+    5
+}
+fn default_bi_min_activation_edge() -> Decimal {
+    Decimal::new(5, 2) // 0.05
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -497,6 +521,8 @@ pub struct ConvergenceConfig {
     pub min_probability: Decimal,
     #[serde(default = "default_max_time_to_expiry_secs")]
     pub max_time_to_expiry_secs: u64,
+    #[serde(default = "default_conv_min_activation_edge")]
+    pub min_activation_edge: Decimal,
 }
 
 impl Default for ConvergenceConfig {
@@ -505,6 +531,7 @@ impl Default for ConvergenceConfig {
             enabled: false,
             min_probability: default_min_probability(),
             max_time_to_expiry_secs: default_max_time_to_expiry_secs(),
+            min_activation_edge: default_conv_min_activation_edge(),
         }
     }
 }
@@ -514,6 +541,9 @@ fn default_min_probability() -> Decimal {
 }
 fn default_max_time_to_expiry_secs() -> u64 {
     300
+}
+fn default_conv_min_activation_edge() -> Decimal {
+    Decimal::new(5, 2) // 0.05
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

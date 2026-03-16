@@ -15,7 +15,7 @@ use tracing::debug;
 
 use pmbot_core::messages::{Signal, StrategyMetrics, WorldState};
 use pmbot_core::types::{
-    ExitReason, FillEvent, MarketId, MarketInfo, PositionId, Side, SignalId,
+    ExitReason, FillEvent, MarketId, MarketInfo, Side, SignalId,
 };
 
 use crate::traits::Strategy;
@@ -49,7 +49,7 @@ pub struct Convergence {
     /// Maximum seconds to expiry to trade (e.g., 300).
     max_time_to_expiry_secs: i64,
     /// Minimum edge (1.0 - price) required to enter.
-    min_edge: Decimal,
+    min_activation_edge: Decimal,
     /// Internal state machine.
     state: ConvergenceState,
     /// Number of signals generated (for metrics).
@@ -61,16 +61,16 @@ impl Convergence {
     ///
     /// - `min_probability`: minimum mid-price threshold (e.g., 0.90)
     /// - `max_time_to_expiry_secs`: max seconds before expiry to trade
-    /// - `min_edge`: minimum edge (1.0 - price) to enter
+    /// - `min_activation_edge`: minimum edge (1.0 - price) to enter
     pub fn new(
         min_probability: Decimal,
         max_time_to_expiry_secs: i64,
-        min_edge: Decimal,
+        min_activation_edge: Decimal,
     ) -> Self {
         Self {
             min_probability,
             max_time_to_expiry_secs,
-            min_edge,
+            min_activation_edge,
             state: ConvergenceState::Scanning,
             signals_generated: 0,
         }
@@ -124,7 +124,7 @@ impl Strategy for Convergence {
                     }
 
                     let edge = Decimal::ONE - mid;
-                    if edge < self.min_edge {
+                    if edge < self.min_activation_edge {
                         continue;
                     }
 
@@ -340,7 +340,7 @@ mod tests {
     #[test]
     fn test_enter_on_high_prob_near_expiry() {
         let mut strat = Convergence::new(dec!(0.90), 300, dec!(0.02));
-        // Mid = 0.95, expires in 200s, edge = 0.05 > 0.02 min_edge
+        // Mid = 0.95, expires in 200s, edge = 0.05 > 0.02 min_activation_edge
         let world = make_convergence_world(dec!(0.95), Some(200), 0);
         let signals = strat.evaluate(&world);
 
@@ -363,7 +363,7 @@ mod tests {
     #[test]
     fn test_no_signal_when_edge_too_small() {
         let mut strat = Convergence::new(dec!(0.90), 300, dec!(0.02));
-        // Mid = 0.99, edge = 0.01 < 0.02 min_edge
+        // Mid = 0.99, edge = 0.01 < 0.02 min_activation_edge
         let world = make_convergence_world(dec!(0.99), Some(200), 0);
         let signals = strat.evaluate(&world);
         assert!(signals.is_empty());

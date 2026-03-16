@@ -50,7 +50,7 @@ pub struct BookImbalance {
     /// Number of recent price points to check for momentum confirmation.
     momentum_window: usize,
     /// Minimum edge to emit in the signal.
-    min_edge: Decimal,
+    min_activation_edge: Decimal,
     /// Internal state machine.
     state: BookImbalanceState,
     /// Number of signals generated.
@@ -63,18 +63,18 @@ impl BookImbalance {
     /// - `threshold`: minimum absolute imbalance to trigger (e.g., 0.6)
     /// - `levels`: number of book levels used for imbalance calc
     /// - `momentum_window`: number of price points to confirm trend
-    /// - `min_edge`: minimum edge value for signal emission
+    /// - `min_activation_edge`: minimum edge value for signal emission
     pub fn new(
         threshold: Decimal,
         levels: usize,
         momentum_window: usize,
-        min_edge: Decimal,
+        min_activation_edge: Decimal,
     ) -> Self {
         Self {
             threshold,
             levels,
             momentum_window,
-            min_edge,
+            min_activation_edge,
             state: BookImbalanceState::Watching,
             signals_generated: 0,
         }
@@ -173,7 +173,7 @@ impl Strategy for BookImbalance {
                     return Vec::new();
                 }
 
-                let edge = imbalance.abs().max(self.min_edge);
+                let edge = imbalance.abs().max(self.min_activation_edge);
                 let signal_id = SignalId::new();
                 self.signals_generated += 1;
 

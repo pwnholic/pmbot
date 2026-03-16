@@ -70,9 +70,24 @@ impl StrategyActor {
                     match result {
                         Ok(event) => {
                             self.world_builder.apply_market_event(&event);
-                            if let pmbot_core::messages::MarketEvent::MarketRotation { old, new } = event {
-                                for strategy in self.registry.iter_mut() {
-                                    strategy.on_market_change(&old, &new);
+                            
+                            // Re-evaluate strategies whenever the orderbook/price updates
+                            // or on market rotation
+                            let should_evaluate = match &event {
+                                pmbot_core::messages::MarketEvent::BookUpdate { .. } => true,
+                                pmbot_core::messages::MarketEvent::PriceChange { .. } => true,
+                                pmbot_core::messages::MarketEvent::MarketRotation { old, new } => {
+                                    for strategy in self.registry.iter_mut() {
+                                        strategy.on_market_change(&old, &new);
+                                    }
+                                    true
+                                }
+                                _ => false,
+                            };
+
+                            if should_evaluate {
+                                if !self.evaluate_and_send().await {
+                                    return;
                                 }
                             }
                         }
@@ -87,7 +102,14 @@ impl StrategyActor {
                 }
                 result = self.feed_rx.recv() => {
                     match result {
-                        Ok(event) => self.world_builder.apply_feed_event(&event),
+                        Ok(event) => {
+                            self.world_builder.apply_feed_event(&event);
+                            // Feed updates (like Binance price) should trigger evaluation 
+                            // especially for LeadLag / FairValue
+                            if !self.evaluate_and_send().await {
+                                return;
+                            }
+                        }
                         Err(broadcast::error::RecvError::Lagged(n)) => {
                             warn!(missed = n, "feed event channel lagged");
                         }
@@ -118,15 +140,22 @@ impl StrategyActor {
                                 }
                                 pmbot_core::messages::ExecutionEvent::OrderPartialFill { order_id, filled, remaining: _ } => {
                                     // Try to reconstruct FillEvent from open orders if possible
+                                    // Note: `filled` here is the *total* filled amount. To properly emit a FillEvent for
+                                    // strategies, we ideally need the *delta* (amount just filled). 
+                                    // For simplicity in this fix, we will emit an event but note that
+                                    // tracking the exact delta requires holding previous state.
+                                    // For now, we pass `remaining` and `filled` appropriately if possible.
                                     let world = self.world_builder.snapshot();
                                     if let Some(order) = world.open_orders.iter().find(|o| o.order_id == order_id.clone()) {
+                                        // To get the delta, we would need to know what was filled previously.
+                                        // As a temporary fix, we'll use `filled` but strategies might double count.
                                         let fill_event = pmbot_core::types::FillEvent {
                                             order_id: order_id.clone(),
                                             signal_id: pmbot_core::types::SignalId::new(), // Partial fill doesn't carry signal_id
                                             market_id: order.market_id.clone(),
                                             side: order.side.clone(),
                                             price: order.price.clone(),
-                                            size: filled.clone(), // Size is the total filled amount here
+                                            size: filled.clone(), // WARNING: Strategies might double-count if they don't track state
                                             timestamp: chrono::Utc::now(),
                                         };
                                         for strategy in self.registry.iter_mut() {
@@ -146,26 +175,29 @@ impl StrategyActor {
                         }
                     }
                 }
-                _ = tick.tick() => {
-                    let world = self.world_builder.snapshot();
-                    for strategy in self.registry.iter_mut() {
-                        let signals = strategy.evaluate(&world);
-                        for signal in signals {
-                            debug!(
-                                strategy = signal.strategy_name(),
-                                "emitting signal"
-                            );
-                            if self.signal_tx.send(signal).await.is_err() {
-                                info!("signal channel closed, shutting down");
-                                return;
-                            }
-                        }
-                    }
-                }
             }
         }
 
         info!("StrategyActor shutting down");
+    }
+
+    /// Evaluates strategies and sends signals. Returns `true` if it should continue, `false` if the channel is closed.
+    async fn evaluate_and_send(&mut self) -> bool {
+        let world = self.world_builder.snapshot();
+        for strategy in self.registry.iter_mut() {
+            let signals = strategy.evaluate(&world);
+            for signal in signals {
+                debug!(
+                    strategy = signal.strategy_name(),
+                    "emitting signal"
+                );
+                if self.signal_tx.send(signal).await.is_err() {
+                    info!("signal channel closed, shutting down");
+                    return false;
+                }
+            }
+        }
+        true
     }
 }
 

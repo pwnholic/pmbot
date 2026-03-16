@@ -98,7 +98,8 @@ impl<E: OrderExecutor + 'static> ExecutorActor<E> {
                 }
             }
             Err(e) => {
-                warn!("reconciliation failed: {}", e);
+                error!("fatal error: reconciliation failed: {}", e);
+                return; // Fatal: do not start the executor loop if reconciliation fails
             }
         }
 

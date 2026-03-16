@@ -115,7 +115,7 @@ fn build_strategies(config: &BotConfig) -> StrategyRegistry {
                 Box::new(FairValue::new(
                     config.strategy.fair_value.vol_multiplier,
                     config.strategy.fair_value.min_time_to_expiry_secs,
-                    config.risk.min_edge,
+                    config.strategy.fair_value.min_activation_edge,
                 ))
             },
             "flash_crash" => {
@@ -124,7 +124,7 @@ fn build_strategies(config: &BotConfig) -> StrategyRegistry {
                     config.strategy.flash_crash.drop_threshold,
                     config.strategy.flash_crash.lookback_secs,
                     config.strategy.flash_crash.reversion_target,
-                    dec!(0.1),
+                    config.strategy.flash_crash.min_recovery_imbalance,
                 ))
             },
             "book_imbalance" => {
@@ -132,8 +132,8 @@ fn build_strategies(config: &BotConfig) -> StrategyRegistry {
                 Box::new(BookImbalance::new(
                     config.strategy.book_imbalance.imbalance_threshold,
                     config.strategy.book_imbalance.levels,
-                    5,
-                    config.risk.min_edge,
+                    config.strategy.book_imbalance.momentum_window,
+                    config.strategy.book_imbalance.min_activation_edge,
                 ))
             },
             "negrisk_arb" => {
@@ -147,7 +147,7 @@ fn build_strategies(config: &BotConfig) -> StrategyRegistry {
                 Box::new(Convergence::new(
                     config.strategy.convergence.min_probability,
                     config.strategy.convergence.max_time_to_expiry_secs as i64,
-                    config.risk.min_edge,
+                    config.strategy.convergence.min_activation_edge,
                 ))
             },
             "market_maker" => {
@@ -192,9 +192,9 @@ struct ActorChannels {
 }
 
 fn create_actor_channels() -> ActorChannels {
-    let (market_event_tx, _) = broadcast::channel(256);
-    let (feed_event_tx, _) = broadcast::channel(256);
-    let (execution_event_tx, _) = broadcast::channel(256);
+    let (market_event_tx, _) = broadcast::channel(2048);
+    let (feed_event_tx, _) = broadcast::channel(2048);
+    let (execution_event_tx, _) = broadcast::channel(2048);
     let (signal_tx, signal_rx) = mpsc::channel(64);
     let (order_tx, order_rx) = mpsc::channel(64);
     let (book_tx, book_rx) = mpsc::channel(256);
