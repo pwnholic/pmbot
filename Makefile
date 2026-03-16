@@ -12,6 +12,15 @@ help:
 	@echo "  run-paper     - Run in paper mode (default)"
 	@echo "  run-live      - Run in live mode (REAL MONEY)"
 	@echo "  config-show   - Show current config"
+	@echo ""
+	@echo "Available strategies: lead_lag, fair_value, flash_crash, book_imbalance, negrisk_arb, convergence, market_maker"
+	@echo ""
+	@echo "Examples:"
+	@echo "  make run STRATEGIES=lead_lag,fair_value"
+	@echo "  make run-live STRATEGIES=lead_lag"
+
+# Default strategies
+STRATEGIES ?= lead_lag,fair_value
 
 build:
 	cargo build --workspace
@@ -26,13 +35,12 @@ clean:
 	cargo clean
 
 run run-paper:
-	@echo "Starting in paper mode..."
-	PMBOT_PRIVATE_KEY=$$PMBOT_PRIVATE_KEY cargo run -- run
+	@echo "Starting in paper mode with strategies: $(STRATEGIES)..."
+	PMBOT_PRIVATE_KEY=$$PMBOT_PRIVATE_KEY cargo run -- run --strategies $(STRATEGIES)
 
 run-live:
-	@echo "Starting in LIVE mode - REAL MONEY!"
-	PMBOT_PRIVATE_KEY=$$PMBOT_PRIVATE_KEY cargo run -- run --config config/default.toml
-	@echo "Make sure PMBOT_PRIVATE_KEY is set!"
+	@echo "Starting in LIVE mode with strategies: $(STRATEGIES)..."
+	PMBOT_PRIVATE_KEY=$$PMBOT_PRIVATE_KEY cargo run -- run --config config/default.toml --strategies $(STRATEGIES)
 
 config-show:
 	cargo run -- config show
