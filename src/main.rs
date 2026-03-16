@@ -16,7 +16,7 @@ use pmbot_core::types::{Level, MarketId, MarketInfo, Symbol, TokenId};
 use pmbot_executor::{ExecutorActor, LiveExecutor, PaperExecutor};
 use pmbot_feed::{FeedActor, RawTradeMessage, VolMethod, run_binance_ws};
 use pmbot_market::actor::RawBookMessage;
-use pmbot_market::{GammaDiscovery, MarketActor, MockDiscovery};
+use pmbot_market::{GammaDiscovery, MarketActor};
 use pmbot_risk::RiskActor;
 use pmbot_strategy::{
     BookImbalance, Convergence, FairValue, FlashCrash, LeadLag, MarketMaker, NegRiskArb, Strategy,
@@ -342,33 +342,18 @@ fn build_common_actors(
 }
 
 // ---------------------------------------------------------------------------
-// Run paper mode — full actor orchestration
+// Run paper mode — full actor orchestration with real market data
 // ---------------------------------------------------------------------------
 
 async fn run_paper(config: BotConfig) -> Result<()> {
-    info!(mode = "paper", "starting actor orchestration");
+    info!(mode = "paper", "starting actor orchestration with real market data");
 
     let channels = create_actor_channels();
     let registry = build_strategies(&config);
     info!(count = registry.len(), "strategies loaded");
 
-    let mock_market = MarketInfo {
-        id: MarketId("btc-15min-up-paper".into()),
-        question: "Will BTC go up in the next 15 minutes?".into(),
-        slug: "btc-15min-up-paper".into(),
-        outcomes: vec!["Yes".into(), "No".into()],
-        token_ids: vec![
-            TokenId("token-yes-paper".into()),
-            TokenId("token-no-paper".into()),
-        ],
-        condition_id: "condition-paper-001".into(),
-        neg_risk: false,
-        active: true,
-        end_date: Some(Utc::now() + chrono::Duration::minutes(15)),
-        liquidity: dec!(50000),
-        volume: dec!(100000),
-    };
-    let discovery = MockDiscovery::new(vec![mock_market]);
+    // Use real Polymarket market data (same as live mode)
+    let discovery = GammaDiscovery::new();
 
     let mut actors = build_common_actors(
         &config,
@@ -382,17 +367,22 @@ async fn run_paper(config: BotConfig) -> Result<()> {
         registry,
     );
 
+    // Use PaperExecutor for simulated order execution (no real orders)
     let paper_executor = PaperExecutor::new(
         config.risk.bankroll,
-        dec!(0.52),
-        MarketId("btc-15min-up-paper".into()),
+        dec!(0.50), // Default mid price for simulation
+        MarketId("paper-mode".into()),
     );
     let executor_actor = ExecutorActor::new(paper_executor, channels.order_rx, channels.execution_event_tx.clone());
 
     info!("spawning all actors...");
 
-    let shutdown_rx = channels.shutdown_tx.subscribe();
-    let synth = tokio::spawn(run_synthetic_feed(channels.book_tx, channels.raw_trade_tx, shutdown_rx));
+    // Use real Binance WebSocket for price feed (same as live mode)
+    let ws_symbols = actors.symbols.clone();
+    let shutdown_rx_ws = channels.shutdown_tx.subscribe();
+    let binance_ws = tokio::spawn(async move {
+        run_binance_ws(&ws_symbols, channels.raw_trade_tx, shutdown_rx_ws).await;
+    });
 
     let market = tokio::spawn(async move {
         if let Err(e) = actors.market_actor.run(&discovery, channels.book_rx).await {
@@ -424,7 +414,7 @@ async fn run_paper(config: BotConfig) -> Result<()> {
     let _ = channels.shutdown_tx.send(());
     tokio::time::sleep(Duration::from_millis(300)).await;
 
-    synth.abort();
+    binance_ws.abort();
     market.abort();
     feed.abort();
     strat.abort();
