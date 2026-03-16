@@ -16,3 +16,4 @@ rust_decimal_macros.workspace = true
 chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+native-tls = "0.2"
