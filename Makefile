@@ -36,7 +36,7 @@ clean:
 
 run run-paper:
 	@echo "Starting in paper mode with strategies: $(STRATEGIES)..."
-	PMBOT_PRIVATE_KEY=$$PMBOT_PRIVATE_KEY cargo run -- run --strategies $(STRATEGIES)
+	cargo run -- run --strategies $(STRATEGIES)
 
 run-live:
 	@echo "Starting in LIVE mode with strategies: $(STRATEGIES)..."

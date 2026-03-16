@@ -1,5 +1,5 @@
 [general]
-mode = "live"                          # "paper" | "live"
+mode = "paper"                          # "paper" | "live"
 log_level = "info"
 strategies = ["lead_lag", "fair_value"]
 
