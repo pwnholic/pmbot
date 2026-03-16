@@ -1,0 +1,17 @@
+[package]
+name = "pmbot-tui"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+pmbot-core.workspace = true
+tokio.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+rust_decimal.workspace = true
+chrono.workspace = true
+
+[dev-dependencies]
+rust_decimal_macros.workspace = true

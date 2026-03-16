@@ -1,0 +1,24 @@
+[package]
+name = "pmbot-core"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+figment.workspace = true
+rust_decimal.workspace = true
+rust_decimal_macros.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+secrecy.workspace = true
+anyhow.workspace = true
+notify = "8"
+tempfile = "3"
+
+[dev-dependencies]
+proptest.workspace = true
+toml.workspace = true

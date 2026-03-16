@@ -1,0 +1,20 @@
+[package]
+name = "pmbot-executor"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+pmbot-core.workspace = true
+polymarket-client-sdk.workspace = true
+alloy.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+rust_decimal.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+async-trait.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+rust_decimal_macros.workspace = true

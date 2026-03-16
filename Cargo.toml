@@ -1,0 +1,130 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/pmbot-core",
+    "crates/pmbot-market",
+    "crates/pmbot-feed",
+    "crates/pmbot-strategy",
+    "crates/pmbot-risk",
+    "crates/pmbot-executor",
+    "crates/pmbot-backtest",
+    "crates/pmbot-tui",
+]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.88.0"
+license = "MIT"
+
+[workspace.dependencies]
+# Polymarket SDK
+polymarket-client-sdk = { version = "0.4", features = [
+    "clob",
+    "gamma",
+    "ws",
+    "rtds",
+    "tracing",
+] }
+
+# Async
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+async-trait = "0.1"
+
+# Ethereum
+alloy = { version = "1.6", features = ["signers", "signer-local", "sol-types"] }
+
+# Serde
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Config
+figment = { version = "0.10", features = ["toml", "env"] }
+
+# Math
+rust_decimal = "1.40"
+rust_decimal_macros = "1.40"
+statrs = "0.18"
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Errors
+thiserror = "2"
+anyhow = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tracing-appender = "0.2"
+
+# TUI
+ratatui = "0.30"
+crossterm = "0.29"
+
+# WebSocket (Binance feed)
+tokio-tungstenite = { version = "0.28", features = ["rustls"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# TOML serialization
+toml = "1.0"
+
+# File watching
+notify = "8"
+
+# Secrets
+secrecy = { version = "0.10", features = ["serde"] }
+
+# IDs
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# Workspace crates
+pmbot-core = { path = "crates/pmbot-core" }
+pmbot-market = { path = "crates/pmbot-market" }
+pmbot-feed = { path = "crates/pmbot-feed" }
+pmbot-strategy = { path = "crates/pmbot-strategy" }
+pmbot-risk = { path = "crates/pmbot-risk" }
+pmbot-executor = { path = "crates/pmbot-executor" }
+pmbot-backtest = { path = "crates/pmbot-backtest" }
+pmbot-tui = { path = "crates/pmbot-tui" }
+
+# Testing
+[workspace.dependencies.proptest]
+version = "1"
+
+[package]
+name = "polymarket-bot"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "pmbot"
+path = "src/main.rs"
+
+[dependencies]
+pmbot-core.workspace = true
+pmbot-market.workspace = true
+pmbot-feed.workspace = true
+pmbot-strategy.workspace = true
+pmbot-risk.workspace = true
+pmbot-executor.workspace = true
+pmbot-backtest.workspace = true
+pmbot-tui.workspace = true
+
+polymarket-client-sdk.workspace = true
+alloy.workspace = true
+secrecy.workspace = true
+tokio.workspace = true
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-appender.workspace = true
+anyhow.workspace = true
+figment.workspace = true
+toml.workspace = true
+rust_decimal.workspace = true
+rust_decimal_macros.workspace = true
+chrono.workspace = true

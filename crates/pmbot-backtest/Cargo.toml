@@ -1,0 +1,16 @@
+[package]
+name = "pmbot-backtest"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+pmbot-core.workspace = true
+pmbot-strategy.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+rust_decimal.workspace = true
+rust_decimal_macros.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true

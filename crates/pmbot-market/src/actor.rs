@@ -1,0 +1,292 @@
+use std::sync::Arc;
+
+use anyhow::Result;
+use rust_decimal::Decimal;
+use tokio::sync::{broadcast, mpsc};
+use tracing::{info, warn};
+
+use pmbot_core::config::MarketConfig;
+use pmbot_core::messages::MarketEvent;
+use pmbot_core::types::{Level, MarketId, OrderbookSnapshot, TokenId};
+
+use crate::book::LocalBook;
+use crate::discovery::{DiscoveryFilters, MarketDiscovery};
+use crate::rotation::MarketRotator;
+use crate::tracker::PriceTracker;
+
+/// Raw book data received from a WebSocket or other source.
+#[derive(Debug, Clone)]
+pub enum RawBookMessage {
+    /// Full snapshot replacement.
+    Snapshot {
+        bids: Vec<Level>,
+        asks: Vec<Level>,
+    },
+    /// Incremental delta update.
+    Delta {
+        bid_updates: Vec<Level>,
+        ask_updates: Vec<Level>,
+    },
+}
+
+/// The Market Actor: manages orderbook state, price tracking, and market rotation.
+pub struct MarketActor {
+    config: MarketConfig,
+    events_tx: broadcast::Sender<MarketEvent>,
+    book: LocalBook,
+    tracker: PriceTracker,
+    rotator: MarketRotator,
+}
+
+impl MarketActor {
+    /// Create a new MarketActor.
+    ///
+    /// Returns the actor and a broadcast receiver for market events.
+    pub fn new(
+        config: MarketConfig,
+        events_tx: broadcast::Sender<MarketEvent>,
+    ) -> Self {
+        let book = LocalBook::new(
+            MarketId("pending".into()),
+            TokenId("pending".into()),
+        );
+
+        let tracker = PriceTracker::new(1000);
+
+        let rotator = MarketRotator::new(
+            config.market_type.clone(),
+            config.no_trade_zone_secs,
+            config.rotation_lookahead_secs,
+        );
+
+        Self {
+            config,
+            events_tx,
+            book,
+            tracker,
+            rotator,
+        }
+    }
+
+    /// Run the actor loop.
+    ///
+    /// 1. Discovers a market using the provided discovery trait.
+    /// 2. Processes raw book messages from the `book_rx` channel.
+    /// 3. Emits `MarketEvent`s on the broadcast channel.
+    pub async fn run(
+        &mut self,
+        discovery: &dyn MarketDiscovery,
+        mut book_rx: mpsc::Receiver<RawBookMessage>,
+    ) -> Result<()> {
+        // Step 1: Discover and select best market
+        let filters = DiscoveryFilters {
+            min_liquidity: Decimal::from(self.config.min_liquidity),
+            min_volume: Decimal::from(self.config.min_volume),
+            tags: self.config.tags.clone(),
+            market_type: self.config.market_type.clone(),
+            active_only: true,
+        };
+
+        let markets = discovery.discover(&filters).await?;
+
+        if markets.is_empty() {
+            warn!("no markets available matching filters");
+            return Err(anyhow::anyhow!("no markets available"));
+        }
+
+        // Pick the market with the highest liquidity
+        let best = markets
+            .into_iter()
+            .max_by_key(|m| m.liquidity)
+            .unwrap();
+
+        info!(
+            market_id = %best.id,
+            question = %best.question,
+            liquidity = %best.liquidity,
+            "selected market"
+        );
+
+        // Initialize book with the selected market's first token
+        let token_id = best.token_ids.first().cloned().unwrap_or(TokenId("unknown".into()));
+        self.book = LocalBook::new(best.id.clone(), token_id);
+        self.rotator.set_current(best);
+
+        // Emit Connected event
+        let _ = self.events_tx.send(MarketEvent::Connected);
+
+        // Step 2: Process book messages
+        while let Some(msg) = book_rx.recv().await {
+            // Check rotation
+            if self.rotator.should_rotate() {
+                info!("market rotation needed");
+                // In a full implementation, we'd discover the next market here.
+                // For now, just log and continue processing.
+            }
+
+            let ts = chrono::Utc::now();
+
+            match msg {
+                RawBookMessage::Snapshot { bids, asks } => {
+                    self.book.apply_snapshot(bids, asks, ts);
+                }
+                RawBookMessage::Delta {
+                    bid_updates,
+                    ask_updates,
+                } => {
+                    self.book.apply_delta(&bid_updates, &ask_updates, ts);
+                }
+            }
+
+            // Update price tracker with mid price
+            let snapshot = self.book.snapshot();
+            if let Some(mid) = snapshot.mid_price() {
+                self.tracker.record(mid, ts);
+
+                let _ = self.events_tx.send(MarketEvent::PriceChange {
+                    market_id: snapshot.market_id.clone(),
+                    token_id: snapshot.token_id.clone(),
+                    price: mid,
+                });
+            }
+
+            // Emit book update
+            let _ = self.events_tx.send(MarketEvent::BookUpdate {
+                market_id: snapshot.market_id.clone(),
+                book: Arc::new(snapshot),
+            });
+        }
+
+        // Channel closed => disconnected
+        let _ = self.events_tx.send(MarketEvent::Disconnected);
+
+        Ok(())
+    }
+
+    /// Get the current orderbook snapshot.
+    pub fn snapshot(&self) -> OrderbookSnapshot {
+        self.book.snapshot()
+    }
+
+    /// Get the price tracker.
+    pub fn tracker(&self) -> &PriceTracker {
+        &self.tracker
+    }
+
+    /// Get the market rotator.
+    pub fn rotator(&self) -> &MarketRotator {
+        &self.rotator
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::discovery::MockDiscovery;
+    use chrono::Utc;
+    use pmbot_core::types::MarketInfo;
+    use rust_decimal_macros::dec;
+
+    fn make_market(id: &str) -> MarketInfo {
+        MarketInfo {
+            id: MarketId(id.into()),
+            question: format!("Market {id}?"),
+            slug: id.into(),
+            outcomes: vec!["Yes".into(), "No".into()],
+            token_ids: vec![TokenId(format!("{id}-yes")), TokenId(format!("{id}-no"))],
+            condition_id: format!("cond-{id}"),
+            neg_risk: false,
+            active: true,
+            end_date: Some(Utc::now() + chrono::Duration::hours(1)),
+            liquidity: dec!(10000),
+            volume: dec!(50000),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_actor_discovers_and_processes_snapshot() {
+        let config = MarketConfig::default();
+        let (events_tx, mut events_rx) = broadcast::channel(32);
+        let mut actor = MarketActor::new(config, events_tx);
+
+        let discovery = MockDiscovery::new(vec![make_market("m1")]);
+        let (book_tx, book_rx) = mpsc::channel(32);
+
+        // Send a snapshot then close the channel
+        book_tx
+            .send(RawBookMessage::Snapshot {
+                bids: vec![Level { price: dec!(0.50), size: dec!(100) }],
+                asks: vec![Level { price: dec!(0.55), size: dec!(100) }],
+            })
+            .await
+            .unwrap();
+        drop(book_tx);
+
+        actor.run(&discovery, book_rx).await.unwrap();
+
+        // Should have received Connected, PriceChange, BookUpdate, Disconnected
+        let mut connected = false;
+        let mut book_update = false;
+        let mut disconnected = false;
+
+        while let Ok(event) = events_rx.try_recv() {
+            match event {
+                MarketEvent::Connected => connected = true,
+                MarketEvent::BookUpdate { .. } => book_update = true,
+                MarketEvent::Disconnected => disconnected = true,
+                _ => {}
+            }
+        }
+
+        assert!(connected);
+        assert!(book_update);
+        assert!(disconnected);
+    }
+
+    #[tokio::test]
+    async fn test_actor_fails_with_no_markets() {
+        let config = MarketConfig::default();
+        let (events_tx, _events_rx) = broadcast::channel(32);
+        let mut actor = MarketActor::new(config, events_tx);
+
+        let discovery = MockDiscovery::new(vec![]);
+        let (_book_tx, book_rx) = mpsc::channel(32);
+
+        let result = actor.run(&discovery, book_rx).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_actor_processes_delta() {
+        let config = MarketConfig::default();
+        let (events_tx, _events_rx) = broadcast::channel(32);
+        let mut actor = MarketActor::new(config, events_tx);
+
+        let discovery = MockDiscovery::new(vec![make_market("m1")]);
+        let (book_tx, book_rx) = mpsc::channel(32);
+
+        // Send snapshot then delta
+        book_tx
+            .send(RawBookMessage::Snapshot {
+                bids: vec![Level { price: dec!(0.50), size: dec!(100) }],
+                asks: vec![Level { price: dec!(0.55), size: dec!(100) }],
+            })
+            .await
+            .unwrap();
+        book_tx
+            .send(RawBookMessage::Delta {
+                bid_updates: vec![Level { price: dec!(0.51), size: dec!(50) }],
+                ask_updates: vec![],
+            })
+            .await
+            .unwrap();
+        drop(book_tx);
+
+        actor.run(&discovery, book_rx).await.unwrap();
+
+        // After processing, the book should have 2 bid levels
+        let snap = actor.snapshot();
+        assert_eq!(snap.bids.len(), 2);
+        assert_eq!(snap.bids[0].price, dec!(0.51));
+    }
+}
