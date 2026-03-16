@@ -6,15 +6,15 @@ Proyek ini adalah **trading bot untuk Polymarket** yang ditulis dalam bahasa Rus
 
 ### Teknologi Utama
 
-| Komponen | Teknologi |
-|----------|-----------|
-| **Runtime** | Tokio (async/await) |
-| **SDK** | polymarket-client-sdk v0.4 |
-| **Blockchain** | Alloy (Ethereum Signer) |
-| **Decimal Math** | rust_decimal |
-| **CLI** | Clap v4 |
-| **Logging** | Tracing + tracing-subscriber |
-| **UI** | Ratatui (TUI) |
+| Komponen         | Teknologi                    |
+| ---------------- | ---------------------------- |
+| **Runtime**      | Tokio (async/await)          |
+| **SDK**          | polymarket-client-sdk v0.4   |
+| **Blockchain**   | Alloy (Ethereum Signer)      |
+| **Decimal Math** | rust_decimal                 |
+| **CLI**          | Clap v4                      |
+| **Logging**      | Tracing + tracing-subscriber |
+| **UI**           | Ratatui (TUI)                |
 
 ---
 
@@ -57,15 +57,15 @@ Bot ini mengimplementasikan pattern actor dengan 5 komponen utama:
 
 Bot mengimplementasikan 7 strategi:
 
-| Strategi | Deskripsi |
-|----------|-----------|
-| **LeadLag** | Memanfaatkan delay antara BTC dan PM price |
-| **FairValue** | Mean reversion berdasarkan waktu ke expiry |
-| **FlashCrash** | Mendeteksi crash dan reverisi |
-| **BookImbalance** | Imbalance pada order book |
-| **NegRiskArb** | Arbitrase pada negative risk markets |
-| **Convergence** | Konvergensi probabilitas |
-| **MarketMaker** | Market making dengan spread |
+| Strategi          | Deskripsi                                  |
+| ----------------- | ------------------------------------------ |
+| **LeadLag**       | Memanfaatkan delay antara BTC dan PM price |
+| **FairValue**     | Mean reversion berdasarkan waktu ke expiry |
+| **FlashCrash**    | Mendeteksi crash dan reverisi              |
+| **BookImbalance** | Imbalance pada order book                  |
+| **NegRiskArb**    | Arbitrase pada negative risk markets       |
+| **Convergence**   | Konvergensi probabilitas                   |
+| **MarketMaker**   | Market making dengan spread                |
 
 ---
 
@@ -95,6 +95,7 @@ let (feed_event_tx, _) = broadcast::channel::<FeedEvent>(256);
 #### B. Fitur CLI Tidak Lengkap
 
 Beberapa command belum diimplementasi:
+
 - `Backtest` - Hanya print, tidak ada logic
 - `Record` - Hanya print
 - `Watch` - Hanya print
@@ -116,15 +117,15 @@ Ini menunjukkan project **belum selesai** atau dalam fase early development.
 
 #### E. Missing Features untuk Production
 
-| Feature | Status |
-|---------|--------|
+| Feature               | Status           |
+| --------------------- | ---------------- |
 | Position P&L Tracking | Parsial (di TUI) |
-| Order Reconciliation | Ada tapi basic |
-| Circuit Breaker | Tidak ada |
-| Health Checks | Tidak ada |
-| Metrics/Monitoring | Tidak ada |
-| Web UI | Tidak ada |
-| Backtest Engine | Stub saja |
+| Order Reconciliation  | Ada tapi basic   |
+| Circuit Breaker       | Tidak ada        |
+| Health Checks         | Tidak ada        |
+| Metrics/Monitoring    | Tidak ada        |
+| Web UI                | Tidak ada        |
+| Backtest Engine       | Stub saja        |
 
 #### F. Hardcoded Values
 
@@ -148,14 +149,14 @@ Nilai-nilai ini seharusnya di-configure.
 
 Berdasarkan dokumentasi `polymarket-client-sdk`, bot ini **belum menggunakan fitur lengkap** dari SDK:
 
-| SDK Feature | Penggunaan |
-|-------------|-----------|
-| CLOB Client (authenticated) | ✅ Sudah |
-| Market Orders (FOK) | ❌ Tidak ada |
-| Order Book Depth | ❌ Tidak digunakan |
-| Position/Order History | ❌ Tidak ada |
-| gamma client - events | ❌ Tidak ada |
-| WebSocket real-time | ❌ Tidak ada |
+| SDK Feature                 | Penggunaan         |
+| --------------------------- | ------------------ |
+| CLOB Client (authenticated) | ✅ Sudah           |
+| Market Orders (FOK)         | ❌ Tidak ada       |
+| Order Book Depth            | ❌ Tidak digunakan |
+| Position/Order History      | ❌ Tidak ada       |
+| gamma client - events       | ❌ Tidak ada       |
+| WebSocket real-time         | ❌ Tidak ada       |
 
 ---
 
@@ -204,4 +205,4 @@ Status: **Early Development / MVP** - Perlu pengembangan lanjutan sebelum bisa d
 
 ---
 
-*Report Generated: 2026-03-16*
+_Report Generated: 2026-03-16_
