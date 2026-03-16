@@ -56,43 +56,6 @@ enum Command {
         strategies: Option<Vec<String>>,
     },
 
-    /// Run a historical backtest.
-    Backtest {
-        /// Path to historical data directory.
-        #[arg(short, long)]
-        data: Option<PathBuf>,
-
-        /// Strategy to backtest.
-        #[arg(short, long)]
-        strategy: Option<String>,
-
-        /// Output directory for reports.
-        #[arg(short, long)]
-        output: Option<PathBuf>,
-    },
-
-    /// Record live market data for later backtesting.
-    Record {
-        /// Market type filter (e.g., "15min", "1hr").
-        #[arg(long)]
-        market_type: Option<String>,
-
-        /// Symbols to record (comma-separated).
-        #[arg(long, value_delimiter = ',')]
-        symbols: Option<Vec<String>>,
-
-        /// Output directory for recorded data.
-        #[arg(short, long)]
-        output: Option<PathBuf>,
-    },
-
-    /// Watch markets via TUI without trading.
-    Watch {
-        /// Specific market ID to watch.
-        #[arg(short, long)]
-        market: Option<String>,
-    },
-
     /// Configuration management.
     Config {
         #[command(subcommand)]
@@ -609,56 +572,6 @@ async fn main() -> Result<()> {
                 "live" => run_live(config).await,
                 other => anyhow::bail!("unknown mode: {other}"),
             }
-        }
-
-        Command::Backtest {
-            data,
-            strategy,
-            output,
-        } => {
-            init_tracing("info")?;
-            print_banner();
-            println!("Backtest mode:");
-            if let Some(d) = &data {
-                println!("  data:     {}", d.display());
-            }
-            if let Some(s) = &strategy {
-                println!("  strategy: {s}");
-            }
-            if let Some(o) = &output {
-                println!("  output:   {}", o.display());
-            }
-            Ok(())
-        }
-
-        Command::Record {
-            market_type,
-            symbols,
-            output,
-        } => {
-            init_tracing("info")?;
-            print_banner();
-            println!("Record mode:");
-            if let Some(mt) = &market_type {
-                println!("  market_type: {mt}");
-            }
-            if let Some(syms) = &symbols {
-                println!("  symbols:     [{}]", syms.join(", "));
-            }
-            if let Some(o) = &output {
-                println!("  output:      {}", o.display());
-            }
-            Ok(())
-        }
-
-        Command::Watch { market } => {
-            init_tracing("info")?;
-            print_banner();
-            println!("Watch mode (TUI only, no trading)");
-            if let Some(m) = &market {
-                println!("  market: {m}");
-            }
-            Ok(())
         }
 
         Command::Config {

@@ -1,7 +1,7 @@
 use std::path::Path;
 
-use figment::Figment;
 use figment::providers::{Env, Format, Toml};
+use figment::Figment;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
@@ -32,8 +32,6 @@ pub struct BotConfig {
     pub strategy: StrategyConfig,
     #[serde(default)]
     pub tui: TuiConfig,
-    #[serde(default)]
-    pub backtest: BacktestConfig,
 }
 
 impl BotConfig {
@@ -93,7 +91,6 @@ impl BotConfig {
         Ok(())
     }
 }
-
 
 // ---------------------------------------------------------------------------
 // Section configs
@@ -608,40 +605,6 @@ fn default_refresh_rate_ms() -> u64 {
 }
 fn default_log_buffer_size() -> usize {
     500
-}
-
-// ---------------------------------------------------------------------------
-// Backtest config
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BacktestConfig {
-    #[serde(default = "default_data_dir")]
-    pub data_dir: String,
-    #[serde(default = "default_output_dir")]
-    pub output_dir: String,
-    #[serde(default = "default_slippage_bps")]
-    pub slippage_bps: u64,
-}
-
-impl Default for BacktestConfig {
-    fn default() -> Self {
-        Self {
-            data_dir: default_data_dir(),
-            output_dir: default_output_dir(),
-            slippage_bps: default_slippage_bps(),
-        }
-    }
-}
-
-fn default_data_dir() -> String {
-    "data/".into()
-}
-fn default_output_dir() -> String {
-    "reports/".into()
-}
-fn default_slippage_bps() -> u64 {
-    5
 }
 
 // ---------------------------------------------------------------------------

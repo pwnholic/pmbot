@@ -85,8 +85,3 @@ refresh_interval_ms = 1000
 enabled = true
 refresh_rate_ms = 100
 log_buffer_size = 500
-
-[backtest]
-data_dir = "data/"
-output_dir = "reports/"
-slippage_bps = 5

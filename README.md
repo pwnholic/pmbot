@@ -91,7 +91,6 @@ export RUST_LOG=pmbot=debug
 | `pmbot-strategy` | Strategy trait + 7 implementations |
 | `pmbot-risk` | Risk checks, Kelly sizing, circuit breakers |
 | `pmbot-executor` | Order execution (live + paper) |
-| `pmbot-backtest` | Historical simulation engine |
 | `pmbot-tui` | Terminal dashboard |
 
 ## License

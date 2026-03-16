@@ -3528,22 +3528,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7edddbd0b52d732b21ad9a5fab5c704c14cd949e5e9a1ec5929a24fded1b904c"
 
 [[package]]
-name = "pmbot-backtest"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "pmbot-core",
- "pmbot-strategy",
- "rust_decimal",
- "rust_decimal_macros",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "pmbot-core"
 version = "0.1.0"
 dependencies = [
@@ -3674,7 +3658,6 @@ dependencies = [
  "chrono",
  "clap",
  "figment",
- "pmbot-backtest",
  "pmbot-core",
  "pmbot-executor",
  "pmbot-feed",
