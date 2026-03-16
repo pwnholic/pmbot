@@ -4,14 +4,12 @@
 //! the configuration automatically.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Duration;
 
 use notify::{Config as NotifyConfig, RecommendedWatcher, RecursiveMode, Watcher};
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::broadcast;
 
 use crate::config::BotConfig;
-use crate::error::ConfigError;
 
 /// Message sent when config is reloaded.
 #[derive(Debug, Clone)]
@@ -85,11 +83,9 @@ impl ConfigWatcher {
 pub fn start_config_watcher(
     path: PathBuf,
     poll_interval: Duration,
-) -> Result<broadcast::Receiver<ConfigEvent>, notify::Error> {
+) -> Result<(ConfigWatcher, broadcast::Receiver<ConfigEvent>), notify::Error> {
     let (watcher, rx) = ConfigWatcher::new(path, poll_interval)?;
-    // Keep watcher alive by spawning it - in practice this would be tied to app lifetime
-    std::mem::forget(watcher);
-    Ok(rx)
+    Ok((watcher, rx))
 }
 
 #[cfg(test)]

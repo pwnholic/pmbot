@@ -2,7 +2,6 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use chrono::Utc;
 use clap::{Parser, Subcommand};
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
@@ -12,7 +11,7 @@ use tracing_subscriber::EnvFilter;
 
 use pmbot_core::BotConfig;
 use pmbot_core::messages::{ExecutableOrder, ExecutionEvent, FeedEvent, MarketEvent, Signal};
-use pmbot_core::types::{Level, MarketId, MarketInfo, Symbol, TokenId};
+use pmbot_core::types::{MarketId, Symbol};
 use pmbot_executor::{ExecutorActor, LiveExecutor, PaperExecutor};
 use pmbot_feed::{FeedActor, RawTradeMessage, VolMethod, run_binance_ws};
 use pmbot_market::actor::RawBookMessage;
@@ -48,8 +47,12 @@ enum Command {
         config: PathBuf,
 
         /// Force paper trading mode regardless of config.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "live")]
         paper: bool,
+
+        /// Force live trading mode (REAL MONEY).
+        #[arg(long, conflicts_with = "paper")]
+        live: bool,
 
         /// Override enabled strategies (comma-separated).
         #[arg(long, value_delimiter = ',')]
@@ -99,42 +102,63 @@ fn build_strategies(config: &BotConfig) -> StrategyRegistry {
     let mut registry = StrategyRegistry::new();
     for name in &config.general.strategies {
         let strategy: Box<dyn Strategy> = match name.as_str() {
-            "lead_lag" => Box::new(LeadLag::new(
-                config.strategy.lead_lag.lag_threshold,
-                config.strategy.lead_lag.entry_delay_ms,
-                config.strategy.lead_lag.exit_convergence_pct,
-            )),
-            "fair_value" => Box::new(FairValue::new(
-                config.strategy.fair_value.vol_multiplier,
-                config.strategy.fair_value.min_time_to_expiry_secs,
-                config.risk.min_edge,
-            )),
-            "flash_crash" => Box::new(FlashCrash::new(
-                config.strategy.flash_crash.drop_threshold,
-                config.strategy.flash_crash.lookback_secs,
-                config.strategy.flash_crash.reversion_target,
-                dec!(0.1),
-            )),
-            "book_imbalance" => Box::new(BookImbalance::new(
-                config.strategy.book_imbalance.imbalance_threshold,
-                config.strategy.book_imbalance.levels,
-                5,
-                config.risk.min_edge,
-            )),
-            "negrisk_arb" => Box::new(NegRiskArb::new(
-                config.strategy.negrisk_arb.sum_deviation_threshold,
-            )),
-            "convergence" => Box::new(Convergence::new(
-                config.strategy.convergence.min_probability,
-                config.strategy.convergence.max_time_to_expiry_secs as i64,
-                config.risk.min_edge,
-            )),
-            "market_maker" => Box::new(MarketMaker::new(
-                config.strategy.market_maker.spread_bps as u32,
-                Decimal::from(config.strategy.market_maker.max_inventory),
-                Decimal::from(config.strategy.market_maker.quote_size),
-                config.strategy.market_maker.refresh_interval_ms,
-            )),
+            "lead_lag" => {
+                if !config.strategy.lead_lag.enabled { continue; }
+                Box::new(LeadLag::new(
+                    config.strategy.lead_lag.lag_threshold,
+                    config.strategy.lead_lag.entry_delay_ms,
+                    config.strategy.lead_lag.exit_convergence_pct,
+                ))
+            },
+            "fair_value" => {
+                if !config.strategy.fair_value.enabled { continue; }
+                Box::new(FairValue::new(
+                    config.strategy.fair_value.vol_multiplier,
+                    config.strategy.fair_value.min_time_to_expiry_secs,
+                    config.risk.min_edge,
+                ))
+            },
+            "flash_crash" => {
+                if !config.strategy.flash_crash.enabled { continue; }
+                Box::new(FlashCrash::new(
+                    config.strategy.flash_crash.drop_threshold,
+                    config.strategy.flash_crash.lookback_secs,
+                    config.strategy.flash_crash.reversion_target,
+                    dec!(0.1),
+                ))
+            },
+            "book_imbalance" => {
+                if !config.strategy.book_imbalance.enabled { continue; }
+                Box::new(BookImbalance::new(
+                    config.strategy.book_imbalance.imbalance_threshold,
+                    config.strategy.book_imbalance.levels,
+                    5,
+                    config.risk.min_edge,
+                ))
+            },
+            "negrisk_arb" => {
+                if !config.strategy.negrisk_arb.enabled { continue; }
+                Box::new(NegRiskArb::new(
+                    config.strategy.negrisk_arb.sum_deviation_threshold,
+                ))
+            },
+            "convergence" => {
+                if !config.strategy.convergence.enabled { continue; }
+                Box::new(Convergence::new(
+                    config.strategy.convergence.min_probability,
+                    config.strategy.convergence.max_time_to_expiry_secs as i64,
+                    config.risk.min_edge,
+                ))
+            },
+            "market_maker" => {
+                if !config.strategy.market_maker.enabled { continue; }
+                Box::new(MarketMaker::new(
+                    config.strategy.market_maker.spread_bps as u32,
+                    Decimal::from(config.strategy.market_maker.max_inventory),
+                    Decimal::from(config.strategy.market_maker.quote_size),
+                    config.strategy.market_maker.refresh_interval_ms,
+                ))
+            },
             other => {
                 warn!(name = other, "unknown strategy, skipping");
                 continue;
@@ -145,86 +169,6 @@ fn build_strategies(config: &BotConfig) -> StrategyRegistry {
     }
 
     registry
-}
-
-// ---------------------------------------------------------------------------
-// Paper mode synthetic data generator
-// ---------------------------------------------------------------------------
-
-async fn run_synthetic_feed(
-    book_tx: mpsc::Sender<RawBookMessage>,
-    raw_trade_tx: mpsc::Sender<RawTradeMessage>,
-    mut shutdown: broadcast::Receiver<()>,
-) {
-    let mut tick = tokio::time::interval(Duration::from_millis(500));
-    let mut btc_price: f64 = 87500.0;
-    let mut pm_mid: f64 = 0.52;
-    let mut tick_count: u64 = 0;
-
-    info!(
-        btc = format!("{btc_price:.2}"),
-        pm_mid = format!("{pm_mid:.4}"),
-        "synthetic data generator started"
-    );
-
-    loop {
-        tokio::select! {
-            _ = shutdown.recv() => {
-                info!("synthetic data generator shutting down");
-                break;
-            }
-            _ = tick.tick() => {
-                tick_count += 1;
-
-                // BTC random walk with sine/cosine oscillation
-                let btc_change = ((tick_count as f64 * 0.7).sin() * 0.002)
-                    + ((tick_count as f64 * 1.3).cos() * 0.001);
-                btc_price *= 1.0 + btc_change;
-
-                // PM mid follows BTC with lag + noise
-                let pm_target = 0.50 + (btc_price - 87500.0) / 87500.0 * 5.0;
-                pm_mid += (pm_target - pm_mid) * 0.1
-                    + ((tick_count as f64 * 2.1).sin() * 0.005);
-                pm_mid = pm_mid.clamp(0.01, 0.99);
-
-                let spread = 0.02;
-                let bid = pm_mid - spread / 2.0;
-                let ask = pm_mid + spread / 2.0;
-
-                let to_dec = |v: f64| Decimal::from_f64_retain(v).unwrap_or(dec!(0.50));
-
-                let book = RawBookMessage::Snapshot {
-                    bids: vec![
-                        Level { price: to_dec(bid), size: dec!(150) },
-                        Level { price: to_dec(bid - 0.01), size: dec!(200) },
-                        Level { price: to_dec(bid - 0.02), size: dec!(300) },
-                    ],
-                    asks: vec![
-                        Level { price: to_dec(ask), size: dec!(120) },
-                        Level { price: to_dec(ask + 0.01), size: dec!(180) },
-                        Level { price: to_dec(ask + 0.02), size: dec!(250) },
-                    ],
-                };
-                if book_tx.send(book).await.is_err() { break; }
-
-                let trade = RawTradeMessage {
-                    symbol: Symbol("BTCUSDT".into()),
-                    price: to_dec(btc_price),
-                    timestamp: Utc::now(),
-                };
-                if raw_trade_tx.send(trade).await.is_err() { break; }
-
-                if tick_count.is_multiple_of(20) {
-                    info!(
-                        tick = tick_count,
-                        btc = format!("{btc_price:.2}"),
-                        pm_mid = format!("{pm_mid:.4}"),
-                        "synthetic tick"
-                    );
-                }
-            }
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -239,6 +183,7 @@ struct ActorChannels {
     signal_rx: mpsc::Receiver<Signal>,
     order_tx: mpsc::Sender<ExecutableOrder>,
     order_rx: mpsc::Receiver<ExecutableOrder>,
+    #[allow(dead_code)]
     book_tx: mpsc::Sender<RawBookMessage>,
     book_rx: mpsc::Receiver<RawBookMessage>,
     raw_trade_tx: mpsc::Sender<RawTradeMessage>,
@@ -345,8 +290,18 @@ fn build_common_actors(
 // Run paper mode — full actor orchestration with real market data
 // ---------------------------------------------------------------------------
 
-async fn run_paper(config: BotConfig) -> Result<()> {
+async fn run_paper(config: BotConfig, config_path: PathBuf) -> Result<()> {
     info!(mode = "paper", "starting actor orchestration with real market data");
+
+    let (_watcher, mut config_rx) = pmbot_core::config_watcher::start_config_watcher(
+        config_path,
+        std::time::Duration::from_secs(5),
+    )?;
+    tokio::spawn(async move {
+        while let Ok(event) = config_rx.recv().await {
+            info!(?event, "config reloaded");
+        }
+    });
 
     let channels = create_actor_channels();
     let registry = build_strategies(&config);
@@ -384,6 +339,13 @@ async fn run_paper(config: BotConfig) -> Result<()> {
         run_binance_ws(&ws_symbols, channels.raw_trade_tx, shutdown_rx_ws).await;
     });
 
+    let shutdown_rx_pm = channels.shutdown_tx.subscribe();
+    let pm_event_rx = channels.market_event_tx.subscribe();
+    let pm_book_tx = channels.book_tx.clone();
+    let polymarket_ws = tokio::spawn(async move {
+        pmbot_market::run_polymarket_ws(pm_event_rx, pm_book_tx, shutdown_rx_pm).await;
+    });
+
     let market = tokio::spawn(async move {
         if let Err(e) = actors.market_actor.run(&discovery, channels.book_rx).await {
             error!(error = %e, "market actor error");
@@ -404,7 +366,9 @@ async fn run_paper(config: BotConfig) -> Result<()> {
     });
 
     info!("all actors running — press Ctrl+C to stop");
-    println!("\n  [PAPER] Bot is running in paper mode. Press Ctrl+C to stop.\n");
+    println!(
+        "\n  [PAPER] Bot is running in paper mode. Press Ctrl+C to stop.\n"
+    );
 
     tokio::signal::ctrl_c()
         .await
@@ -412,14 +376,9 @@ async fn run_paper(config: BotConfig) -> Result<()> {
 
     info!("shutting down...");
     let _ = channels.shutdown_tx.send(());
-    tokio::time::sleep(Duration::from_millis(300)).await;
-
-    binance_ws.abort();
-    market.abort();
-    feed.abort();
-    strat.abort();
-    risk.abort();
-    exec.abort();
+    let _ = tokio::time::timeout(Duration::from_secs(5), async {
+        let _ = tokio::join!(binance_ws, polymarket_ws, market, feed, strat, risk, exec);
+    }).await;
 
     println!("\n  Bot stopped. Goodbye!\n");
     Ok(())
@@ -429,29 +388,85 @@ async fn run_paper(config: BotConfig) -> Result<()> {
 // Run live mode — real SDK + real feeds
 // ---------------------------------------------------------------------------
 
-async fn run_live(config: BotConfig) -> Result<()> {
+async fn run_live(config: BotConfig, config_path: PathBuf) -> Result<()> {
     info!(mode = "live", "starting live actor orchestration");
+
+    let (_watcher, mut config_rx) = pmbot_core::config_watcher::start_config_watcher(
+        config_path,
+        std::time::Duration::from_secs(5),
+    )?;
+    tokio::spawn(async move {
+        while let Ok(event) = config_rx.recv().await {
+            info!(?event, "config reloaded");
+        }
+    });
+
+    // --- Safety confirmation ---
+    eprintln!();
+    eprintln!("  ============================================");
+    eprintln!("  WARNING: You are about to start LIVE trading");
+    eprintln!("  Real orders will be placed with real money.");
+    eprintln!("  Bankroll: ${}", config.risk.bankroll);
+    eprintln!("  Max position: {}% of bankroll", config.risk.max_position_pct * dec!(100));
+    eprintln!("  Daily loss limit: {}%", config.risk.daily_loss_limit_pct * dec!(100));
+    eprintln!("  Kill switch: {}", config.risk.kill_switch_path);
+    eprintln!("  ============================================");
+    eprintln!();
+    eprint!("  Type 'yes' to confirm: ");
+    use std::io::BufRead;
+    let mut input = String::new();
+    std::io::stdin()
+        .lock()
+        .read_line(&mut input)
+        .context("failed to read confirmation")?;
+    if input.trim().to_lowercase() != "yes" {
+        eprintln!("  Aborted. No orders will be placed.");
+        return Ok(());
+    }
+    eprintln!();
 
     // --- Authenticate with Polymarket SDK ---
     use alloy::signers::Signer as _;
     use alloy::signers::local::LocalSigner;
+    use alloy::primitives::Address;
     use polymarket_client_sdk::POLYGON;
     use polymarket_client_sdk::clob::{Client as ClobClient, Config as ClobConfig};
+    use polymarket_client_sdk::clob::types::SignatureType as SdkSignatureType;
     use std::str::FromStr as _;
 
     let private_key = std::env::var("PMBOT_PRIVATE_KEY")
         .context("PMBOT_PRIVATE_KEY env var required for live mode")?;
 
     let signer = LocalSigner::from_str(&private_key)?.with_chain_id(Some(POLYGON));
+    info!(address = %signer.address(), "signer loaded");
+
+    // Determine SDK signature type from config
+    let sdk_sig_type = match config.wallet.signature_type {
+        pmbot_core::types::SignatureType::Eoa => SdkSignatureType::Eoa,
+        pmbot_core::types::SignatureType::Proxy => SdkSignatureType::Proxy,
+        pmbot_core::types::SignatureType::GnosisSafe => SdkSignatureType::GnosisSafe,
+    };
 
     let clob_config = ClobConfig::builder().use_server_time(true).build();
-    let clob_client = ClobClient::new(&config.clob.host, clob_config)?
+
+    let mut auth_builder = ClobClient::new(&config.clob.host, clob_config)?
         .authentication_builder(&signer)
+        .signature_type(sdk_sig_type);
+
+    // If user provides an explicit funder/safe address, use it
+    if let Ok(funder_hex) = std::env::var("POLY_SAFE_ADDRESS") {
+        let funder = Address::from_str(&funder_hex)
+            .context("invalid POLY_SAFE_ADDRESS")?;
+        info!(%funder, "using explicit funder/safe address");
+        auth_builder = auth_builder.funder(funder);
+    }
+
+    let clob_client = auth_builder
         .authenticate()
         .await
         .context("CLOB authentication failed")?;
 
-    info!("authenticated with Polymarket CLOB");
+    info!(sig_type = ?config.wallet.signature_type, "authenticated with Polymarket CLOB");
 
     let channels = create_actor_channels();
     let registry = build_strategies(&config);
@@ -479,6 +494,13 @@ async fn run_live(config: BotConfig) -> Result<()> {
     let shutdown_rx_ws = channels.shutdown_tx.subscribe();
     let binance_ws = tokio::spawn(async move {
         run_binance_ws(&ws_symbols, channels.raw_trade_tx, shutdown_rx_ws).await;
+    });
+
+    let shutdown_rx_pm = channels.shutdown_tx.subscribe();
+    let pm_event_rx = channels.market_event_tx.subscribe();
+    let pm_book_tx = channels.book_tx.clone();
+    let polymarket_ws = tokio::spawn(async move {
+        pmbot_market::run_polymarket_ws(pm_event_rx, pm_book_tx, shutdown_rx_pm).await;
     });
 
     let market = tokio::spawn(async move {
@@ -510,14 +532,9 @@ async fn run_live(config: BotConfig) -> Result<()> {
 
     info!("shutting down...");
     let _ = channels.shutdown_tx.send(());
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    binance_ws.abort();
-    market.abort();
-    feed.abort();
-    strat.abort();
-    risk.abort();
-    exec.abort();
+    let _ = tokio::time::timeout(Duration::from_secs(5), async {
+        let _ = tokio::join!(binance_ws, polymarket_ws, market, feed, strat, risk, exec);
+    }).await;
 
     println!("\n  Bot stopped. Goodbye!\n");
     Ok(())
@@ -535,6 +552,7 @@ async fn main() -> Result<()> {
         Command::Run {
             config: config_path,
             paper,
+            live,
             strategies,
         } => {
             let mut config = BotConfig::load(&config_path)
@@ -542,6 +560,8 @@ async fn main() -> Result<()> {
 
             if paper {
                 config.general.mode = "paper".into();
+            } else if live {
+                config.general.mode = "live".into();
             }
             if let Some(strats) = strategies {
                 config.general.strategies = strats;
@@ -558,8 +578,8 @@ async fn main() -> Result<()> {
             );
 
             match config.general.mode.as_str() {
-                "paper" => run_paper(config).await,
-                "live" => run_live(config).await,
+                "paper" => run_paper(config, config_path).await,
+                "live" => run_live(config, config_path).await,
                 other => anyhow::bail!("unknown mode: {other}"),
             }
         }
@@ -579,7 +599,10 @@ async fn main() -> Result<()> {
 }
 
 fn init_tracing(level: &str) -> Result<()> {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
+    // Suppress noisy "unknown field" warnings from the SDK's serde deserializer.
+    // The Gamma API returns fields (feeType, eventMetadata) the SDK doesn't model yet.
+    let default_filter = format!("{level},polymarket_client_sdk::serde_helpers=error");
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_filter));
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(true)

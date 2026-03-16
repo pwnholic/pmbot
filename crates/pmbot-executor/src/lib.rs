@@ -53,6 +53,7 @@ mod tests {
         orders_tx
             .send(ExecutableOrder::Limit {
                 signal_id,
+                market_id: MarketId("test-m".into()),
                 token_id: TokenId("tok".into()),
                 side: Side::Buy,
                 price: dec!(0.45),
@@ -98,6 +99,7 @@ mod tests {
         orders_tx
             .send(ExecutableOrder::Market {
                 signal_id,
+                market_id: MarketId("test-m".into()),
                 token_id: TokenId("tok".into()),
                 side: Side::Buy,
                 size: dec!(10),
@@ -177,6 +179,7 @@ mod tests {
         orders_tx
             .send(ExecutableOrder::Market {
                 signal_id,
+                market_id: MarketId("test-m".into()),
                 token_id: TokenId("tok".into()),
                 side: Side::Buy,
                 size: dec!(100), // costs $50, but only $1 available

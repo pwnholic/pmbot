@@ -70,7 +70,7 @@ impl FeedActor {
     }
 
     fn handle_raw_trade(&mut self, msg: RawTradeMessage) {
-        debug!(symbol = %msg.symbol, price = %msg.price, "raw trade received");
+        info!(symbol = %msg.symbol, price = %msg.price, "Binance Trade Update");
 
         // Broadcast spot price
         let spot_event = FeedEvent::SpotPrice {

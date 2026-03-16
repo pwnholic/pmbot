@@ -30,7 +30,7 @@ enum ConvergenceState {
     Scanning,
     /// Holding a convergence position.
     InPosition {
-        position_id: PositionId,
+        signal_id: SignalId,
         market_id: MarketId,
     },
 }
@@ -134,11 +134,10 @@ impl Strategy for Convergence {
                     };
 
                     let signal_id = SignalId::new();
-                    let position_id = PositionId::new();
                     self.signals_generated += 1;
 
                     self.state = ConvergenceState::InPosition {
-                        position_id,
+                        signal_id,
                         market_id: market_id.clone(),
                     };
 
@@ -156,7 +155,7 @@ impl Strategy for Convergence {
                         market_id: market_id.clone(),
                         token_id,
                         side: Side::Buy,
-                        size: dec!(10),
+                        size: dec!(1),
                         price: Some(mid),
                         edge,
                         confidence: dec!(0.90),
@@ -166,7 +165,7 @@ impl Strategy for Convergence {
             }
 
             ConvergenceState::InPosition {
-                position_id,
+                signal_id,
                 market_id,
             } => {
                 // Check if thesis is broken: mid_price dropped significantly.
@@ -174,7 +173,7 @@ impl Strategy for Convergence {
                     && let Some(mid) = snap.mid_price
                     && mid < self.min_probability * dec!(0.95)
                 {
-                    let position_id = *position_id;
+                    let original_signal_id = *signal_id;
                     let signal_id = SignalId::new();
                     self.signals_generated += 1;
 
@@ -188,7 +187,7 @@ impl Strategy for Convergence {
                     return vec![Signal::Exit {
                         id: signal_id,
                         strategy: "convergence",
-                        position_id,
+                        signal_id: original_signal_id,
                         reason: ExitReason::StopLoss,
                     }];
                 }
@@ -300,6 +299,7 @@ mod tests {
         );
 
         WorldState {
+            active_market_id: None,
             markets,
             positions: Vec::new(),
             open_orders: Vec::new(),

@@ -11,6 +11,7 @@ pub struct DiscoveryFilters {
     pub min_volume: Decimal,
     pub tags: Vec<String>,
     pub market_type: String,
+    pub keyword: String,
     pub active_only: bool,
 }
 
@@ -20,7 +21,8 @@ impl Default for DiscoveryFilters {
             min_liquidity: Decimal::ZERO,
             min_volume: Decimal::ZERO,
             tags: Vec::new(),
-            market_type: "15min".into(),
+            market_type: "5min".into(),
+            keyword: "BTC".into(),
             active_only: true,
         }
     }

@@ -36,10 +36,10 @@ impl CircuitBreaker {
     /// 5. Insufficient balance
     pub fn check(&self, signal: &Signal, world: &WorldState) -> Result<(), RejectReason> {
         // Only enter signals need full checks
-        let (edge, size, price) = match signal {
+        let (edge, size, price, market_id) = match signal {
             Signal::Enter {
-                edge, size, price, ..
-            } => (*edge, *size, *price),
+                edge, size, price, market_id, ..
+            } => (*edge, *size, *price, market_id),
             _ => return Ok(()),
         };
 
@@ -71,6 +71,21 @@ impl CircuitBreaker {
         let required = size * price.unwrap_or(Decimal::ONE);
         if world.balance < required {
             return Err(RejectReason::InsufficientBalance);
+        }
+
+        // 6. No-trade zone
+        if let Some(market) = world.markets.get(market_id) {
+            if let Some(end_date) = market.info.end_date {
+                let now = chrono::Utc::now();
+                if end_date > now {
+                    let seconds_remaining = (end_date - now).num_seconds() as u64;
+                    if seconds_remaining < self.config.no_trade_zone_secs {
+                        return Err(RejectReason::NoTradeZone { seconds_remaining });
+                    }
+                } else {
+                    return Err(RejectReason::NoTradeZone { seconds_remaining: 0 });
+                }
+            }
         }
 
         Ok(())
@@ -125,6 +140,7 @@ mod tests {
             stop_loss_pct: dec!(0.30),
             take_profit_multiplier: dec!(2),
             min_edge: dec!(0.08),
+            no_trade_zone_secs: 60,
             kill_switch_path: "/tmp/pmbot-risk-test-kill-NONEXISTENT".into(),
         }
     }
@@ -145,6 +161,7 @@ mod tests {
 
     fn test_world(balance: Decimal) -> WorldState {
         WorldState {
+            active_market_id: None,
             markets: HashMap::new(),
             positions: vec![],
             open_orders: vec![],

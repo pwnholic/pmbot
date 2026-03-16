@@ -67,6 +67,34 @@ pub fn depth_at_price(book: &[Level], target_price: Decimal, side: Side) -> Deci
     }
 }
 
+/// Approximate square root for `Decimal` using Newton's method.
+///
+/// Returns `None` for negative inputs. Returns `Some(Decimal::ZERO)` for zero.
+pub fn decimal_sqrt(val: Decimal) -> Option<Decimal> {
+    if val < Decimal::ZERO {
+        return None;
+    }
+    if val.is_zero() || val == Decimal::ONE {
+        return Some(val);
+    }
+
+    let two = Decimal::TWO;
+    let mut guess = val / two;
+
+    for _ in 0..20 {
+        if guess.is_zero() {
+            return Some(Decimal::ZERO);
+        }
+        let next_guess = (guess + val / guess) / two;
+        if (guess - next_guess).abs() < Decimal::new(1, 8) {
+            return Some(next_guess);
+        }
+        guess = next_guess;
+    }
+
+    Some(guess)
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

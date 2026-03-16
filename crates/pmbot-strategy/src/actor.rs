@@ -68,7 +68,14 @@ impl StrategyActor {
             tokio::select! {
                 result = self.market_rx.recv() => {
                     match result {
-                        Ok(event) => self.world_builder.apply_market_event(&event),
+                        Ok(event) => {
+                            self.world_builder.apply_market_event(&event);
+                            if let pmbot_core::messages::MarketEvent::MarketRotation { old, new } = event {
+                                for strategy in self.registry.iter_mut() {
+                                    strategy.on_market_change(&old, &new);
+                                }
+                            }
+                        }
                         Err(broadcast::error::RecvError::Lagged(n)) => {
                             warn!(missed = n, "market event channel lagged");
                         }
@@ -92,7 +99,44 @@ impl StrategyActor {
                 }
                 result = self.execution_rx.recv() => {
                     match result {
-                        Ok(event) => self.world_builder.apply_execution_event(&event),
+                        Ok(event) => {
+                            self.world_builder.apply_execution_event(&event);
+                            match event {
+                                pmbot_core::messages::ExecutionEvent::OrderFilled { order_id, signal_id, market_id, side, price, size } => {
+                                    let fill_event = pmbot_core::types::FillEvent {
+                                        order_id: order_id.clone(),
+                                        signal_id: signal_id.clone(),
+                                        market_id: market_id.clone(),
+                                        side: side.clone(),
+                                        price: price.clone(),
+                                        size: size.clone(),
+                                        timestamp: chrono::Utc::now(),
+                                    };
+                                    for strategy in self.registry.iter_mut() {
+                                        strategy.on_fill(&fill_event);
+                                    }
+                                }
+                                pmbot_core::messages::ExecutionEvent::OrderPartialFill { order_id, filled, remaining: _ } => {
+                                    // Try to reconstruct FillEvent from open orders if possible
+                                    let world = self.world_builder.snapshot();
+                                    if let Some(order) = world.open_orders.iter().find(|o| o.order_id == order_id.clone()) {
+                                        let fill_event = pmbot_core::types::FillEvent {
+                                            order_id: order_id.clone(),
+                                            signal_id: pmbot_core::types::SignalId::new(), // Partial fill doesn't carry signal_id
+                                            market_id: order.market_id.clone(),
+                                            side: order.side.clone(),
+                                            price: order.price.clone(),
+                                            size: filled.clone(), // Size is the total filled amount here
+                                            timestamp: chrono::Utc::now(),
+                                        };
+                                        for strategy in self.registry.iter_mut() {
+                                            strategy.on_fill(&fill_event);
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
                         Err(broadcast::error::RecvError::Lagged(n)) => {
                             warn!(missed = n, "execution event channel lagged");
                         }
@@ -154,7 +198,7 @@ mod tests {
         }
 
         fn evaluate(&mut self, world: &WorldState) -> Vec<Signal> {
-            if let Some((market_id, snap)) = world.markets.iter().next() {
+            if let Some((market_id, snap)) = world.active_market_id.as_ref().and_then(|id| world.markets.get(id).map(|snap| (id, snap))) {
                 self.count += 1;
                 let token_id = snap.info.token_ids.first().cloned()
                     .unwrap_or(TokenId(String::new()));
@@ -164,7 +208,7 @@ mod tests {
                     market_id: market_id.clone(),
                     token_id,
                     side: Side::Buy,
-                    size: dec!(10),
+                    size: dec!(1),
                     price: Some(dec!(0.50)),
                     edge: dec!(0.05),
                     confidence: dec!(0.80),

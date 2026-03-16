@@ -106,7 +106,7 @@ impl VolComputer {
             variance = lambda * variance + one_minus_lambda * r * r;
         }
 
-        decimal_sqrt(variance)
+        pmbot_core::math::decimal_sqrt(variance)
     }
 
     /// Simple rolling standard deviation of log returns.
@@ -123,7 +123,7 @@ impl VolComputer {
         let sum_sq: Decimal = returns.iter().map(|r| (*r - mean) * (*r - mean)).sum();
         let variance = sum_sq / Decimal::from((n - 1) as u64);
 
-        decimal_sqrt(variance)
+        pmbot_core::math::decimal_sqrt(variance)
     }
 
     /// Parkinson volatility estimator.
@@ -180,8 +180,15 @@ impl VolComputer {
             if prev.is_zero() {
                 continue;
             }
-            // Approximate log return: (curr - prev) / prev
-            returns.push((curr - prev) / prev);
+            // Use log return: ln(curr/prev)
+            let curr_f64 = rust_decimal::prelude::ToPrimitive::to_f64(&curr).unwrap_or(0.0);
+            let prev_f64 = rust_decimal::prelude::ToPrimitive::to_f64(&prev).unwrap_or(1.0);
+            if prev_f64 > 0.0 && curr_f64 > 0.0 {
+                let log_ret = f64::ln(curr_f64 / prev_f64);
+                if let Some(dec_ret) = rust_decimal::prelude::FromPrimitive::from_f64(log_ret) {
+                    returns.push(dec_ret);
+                }
+            }
         }
 
         if returns.is_empty() {
@@ -190,40 +197,6 @@ impl VolComputer {
             Some(returns)
         }
     }
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/// Approximate square root for `Decimal` using Newton's method.
-///
-/// Returns `None` for negative inputs. Returns `Some(Decimal::ZERO)` for zero.
-fn decimal_sqrt(val: Decimal) -> Option<Decimal> {
-    if val < Decimal::ZERO {
-        return None;
-    }
-    if val.is_zero() {
-        return Some(Decimal::ZERO);
-    }
-
-    // Newton's method: x_{n+1} = (x_n + val / x_n) / 2
-    let mut guess = val / Decimal::TWO;
-    if guess.is_zero() {
-        guess = Decimal::ONE;
-    }
-
-    for _ in 0..50 {
-        let next = (guess + val / guess) / Decimal::TWO;
-        let diff = (next - guess).abs();
-        guess = next;
-        // Converge to ~12 decimal places
-        if diff < dec!(0.000000000001) {
-            break;
-        }
-    }
-
-    Some(guess)
 }
 
 // ---------------------------------------------------------------------------
@@ -349,13 +322,13 @@ mod tests {
 
     #[test]
     fn test_decimal_sqrt() {
-        let result = decimal_sqrt(dec!(4)).unwrap();
+        let result = pmbot_core::math::decimal_sqrt(dec!(4)).unwrap();
         let diff = (result - dec!(2)).abs();
         assert!(diff < dec!(0.000001), "sqrt(4) = {result}, expected ~2");
 
-        let result = decimal_sqrt(dec!(0)).unwrap();
+        let result = pmbot_core::math::decimal_sqrt(dec!(0)).unwrap();
         assert_eq!(result, Decimal::ZERO);
 
-        assert!(decimal_sqrt(dec!(-1)).is_none());
+        assert!(pmbot_core::math::decimal_sqrt(dec!(-1)).is_none());
     }
 }

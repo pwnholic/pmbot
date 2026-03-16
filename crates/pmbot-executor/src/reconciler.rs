@@ -117,8 +117,14 @@ mod tests {
 
         // Create a tracked order that is "live" but not on exchange.
         let oid = OrderId("missing-1".into());
-        let mut order =
-            TrackedOrder::new(SignalId::new(), TokenId("t".into()), Side::Buy, dec!(0.5), dec!(10));
+        let mut order = TrackedOrder::new(
+            SignalId::new(),
+            MarketId("test-m".into()),
+            TokenId("t".into()),
+            Side::Buy,
+            dec!(0.5),
+            dec!(10),
+        );
         order.submit().unwrap();
         order.make_live(oid.clone()).unwrap();
         tracked.insert(oid.clone(), order);

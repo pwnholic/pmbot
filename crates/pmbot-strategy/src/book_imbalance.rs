@@ -12,7 +12,7 @@ use tracing::debug;
 
 use pmbot_core::messages::{Signal, StrategyMetrics, WorldState};
 use pmbot_core::types::{
-    ExitReason, FillEvent, MarketId, MarketInfo, PositionId, Side, SignalId,
+    ExitReason, FillEvent, MarketId, MarketInfo, Side, SignalId,
 };
 
 use crate::traits::Strategy;
@@ -27,7 +27,7 @@ enum BookImbalanceState {
     Watching,
     /// We have an open position triggered by imbalance.
     InPosition {
-        position_id: PositionId,
+        signal_id: SignalId,
         entry_imbalance: Decimal,
     },
 }
@@ -129,7 +129,7 @@ impl Strategy for BookImbalance {
 
     fn evaluate(&mut self, world: &WorldState) -> Vec<Signal> {
         // 1. Get the first market.
-        let (market_id, snap) = match world.markets.iter().next() {
+        let (market_id, snap) = match world.active_market_id.as_ref().and_then(|id| world.markets.get(id).map(|snap| (id, snap))) {
             Some(pair) => pair,
             None => return Vec::new(),
         };
@@ -175,11 +175,10 @@ impl Strategy for BookImbalance {
 
                 let edge = imbalance.abs().max(self.min_edge);
                 let signal_id = SignalId::new();
-                let position_id = PositionId::new();
                 self.signals_generated += 1;
 
                 self.state = BookImbalanceState::InPosition {
-                    position_id,
+                    signal_id,
                     entry_imbalance: imbalance,
                 };
 
@@ -189,7 +188,7 @@ impl Strategy for BookImbalance {
                     market_id: market_id.clone(),
                     token_id,
                     side: direction,
-                    size: dec!(10),
+                    size: dec!(1),
                     price: snap.mid_price,
                     edge,
                     confidence: dec!(0.55),
@@ -197,7 +196,7 @@ impl Strategy for BookImbalance {
             }
 
             BookImbalanceState::InPosition {
-                position_id,
+                signal_id,
                 entry_imbalance,
             } => {
                 // 5. Exit when imbalance reverses (crosses zero).
@@ -208,7 +207,7 @@ impl Strategy for BookImbalance {
                 };
 
                 if reversed {
-                    let position_id = *position_id;
+                    let original_signal_id = *signal_id;
                     let signal_id = SignalId::new();
                     self.signals_generated += 1;
 
@@ -217,7 +216,7 @@ impl Strategy for BookImbalance {
                     vec![Signal::Exit {
                         id: signal_id,
                         strategy: "book_imbalance",
-                        position_id,
+                        signal_id: original_signal_id,
                         reason: ExitReason::StrategyExit,
                     }]
                 } else {
@@ -331,6 +330,7 @@ mod tests {
         );
 
         WorldState {
+            active_market_id: Some(MarketId("m-1".into())),
             markets,
             positions: Vec::new(),
             open_orders: Vec::new(),

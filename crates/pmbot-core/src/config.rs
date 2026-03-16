@@ -21,8 +21,6 @@ pub struct BotConfig {
     #[serde(default)]
     pub clob: ClobConfig,
     #[serde(default)]
-    pub builder: BuilderConfig,
-    #[serde(default)]
     pub market: MarketConfig,
     #[serde(default)]
     pub risk: RiskConfig,
@@ -125,8 +123,6 @@ fn default_log_level() -> String {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WalletConfig {
-    #[serde(default)]
-    pub encrypted_key_path: String,
     #[serde(default = "default_signature_type")]
     pub signature_type: SignatureType,
 }
@@ -134,7 +130,6 @@ pub struct WalletConfig {
 impl Default for WalletConfig {
     fn default() -> Self {
         Self {
-            encrypted_key_path: String::new(),
             signature_type: default_signature_type(),
         }
     }
@@ -148,40 +143,18 @@ fn default_signature_type() -> SignatureType {
 pub struct ClobConfig {
     #[serde(default = "default_clob_host")]
     pub host: String,
-    #[serde(default = "default_ws_host")]
-    pub ws_host: String,
-    #[serde(default = "default_chain_id")]
-    pub chain_id: u64,
 }
 
 impl Default for ClobConfig {
     fn default() -> Self {
         Self {
             host: default_clob_host(),
-            ws_host: default_ws_host(),
-            chain_id: default_chain_id(),
         }
     }
 }
 
 fn default_clob_host() -> String {
     "https://clob.polymarket.com".into()
-}
-fn default_ws_host() -> String {
-    "wss://ws-subscriptions-clob.polymarket.com".into()
-}
-fn default_chain_id() -> u64 {
-    137
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct BuilderConfig {
-    #[serde(default)]
-    pub api_key: String,
-    #[serde(default)]
-    pub api_secret: String,
-    #[serde(default)]
-    pub api_passphrase: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -196,6 +169,8 @@ pub struct MarketConfig {
     pub tags: Vec<String>,
     #[serde(default = "default_market_type")]
     pub market_type: String,
+    #[serde(default = "default_keyword")]
+    pub keyword: String,
     #[serde(default = "default_no_trade_zone")]
     pub no_trade_zone_secs: u64,
     #[serde(default = "default_rotation_lookahead")]
@@ -210,6 +185,7 @@ impl Default for MarketConfig {
             min_volume: default_min_volume(),
             tags: vec!["crypto".into()],
             market_type: default_market_type(),
+            keyword: default_keyword(),
             no_trade_zone_secs: default_no_trade_zone(),
             rotation_lookahead_secs: default_rotation_lookahead(),
         }
@@ -226,7 +202,10 @@ fn default_min_volume() -> u64 {
     10000
 }
 fn default_market_type() -> String {
-    "15min".into()
+    "5min".into()
+}
+fn default_keyword() -> String {
+    "BTC".into()
 }
 fn default_no_trade_zone() -> u64 {
     60
@@ -253,6 +232,8 @@ pub struct RiskConfig {
     pub take_profit_multiplier: Decimal,
     #[serde(default = "default_min_edge")]
     pub min_edge: Decimal,
+    #[serde(default = "default_no_trade_zone")]
+    pub no_trade_zone_secs: u64,
     #[serde(default = "default_kill_switch_path")]
     pub kill_switch_path: String,
 }
@@ -268,6 +249,7 @@ impl Default for RiskConfig {
             stop_loss_pct: default_stop_loss_pct(),
             take_profit_multiplier: default_take_profit_multiplier(),
             min_edge: default_min_edge(),
+            no_trade_zone_secs: default_no_trade_zone(),
             kill_switch_path: default_kill_switch_path(),
         }
     }
@@ -313,8 +295,6 @@ pub struct FeedConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BinanceFeedConfig {
-    #[serde(default = "default_true")]
-    pub enabled: bool,
     #[serde(default = "default_symbols")]
     pub symbols: Vec<String>,
     #[serde(default = "default_vol_window")]
@@ -326,7 +306,6 @@ pub struct BinanceFeedConfig {
 impl Default for BinanceFeedConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
             symbols: default_symbols(),
             vol_window_secs: default_vol_window(),
             vol_method: default_vol_method(),
@@ -338,7 +317,7 @@ fn default_true() -> bool {
     true
 }
 fn default_symbols() -> Vec<String> {
-    vec!["BTCUSDT".into(), "ETHUSDT".into(), "SOLUSDT".into()]
+    vec!["BTCUSDT".into()]
 }
 fn default_vol_window() -> u64 {
     900
@@ -582,8 +561,6 @@ fn default_refresh_interval_ms() -> u64 {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TuiConfig {
-    #[serde(default = "default_true")]
-    pub enabled: bool,
     #[serde(default = "default_refresh_rate_ms")]
     pub refresh_rate_ms: u64,
     #[serde(default = "default_log_buffer_size")]
@@ -593,7 +570,6 @@ pub struct TuiConfig {
 impl Default for TuiConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
             refresh_rate_ms: default_refresh_rate_ms(),
             log_buffer_size: default_log_buffer_size(),
         }
@@ -620,12 +596,10 @@ mod tests {
     fn test_default_config() {
         let config = BotConfig::default();
         assert_eq!(config.general.mode, "paper");
-        assert_eq!(config.clob.chain_id, 137);
         assert_eq!(config.risk.bankroll, Decimal::new(1000, 0));
         assert_eq!(config.risk.max_positions, 5);
         assert!(config.strategy.lead_lag.enabled);
         assert!(!config.strategy.flash_crash.enabled);
-        assert!(config.tui.enabled);
     }
 
     #[test]
@@ -656,7 +630,6 @@ max_positions = 3
         assert_eq!(config.risk.kelly_fraction, Decimal::new(10, 2));
         assert_eq!(config.risk.max_positions, 3);
         // defaults should still apply for unset fields
-        assert_eq!(config.clob.chain_id, 137);
         assert!(config.strategy.lead_lag.enabled);
 
         std::fs::remove_dir_all(&dir).ok();
@@ -696,6 +669,6 @@ max_positions = 3
         let toml_str =
             toml::to_string_pretty(&config).expect("default config should serialize to TOML");
         assert!(toml_str.contains("paper"));
-        assert!(toml_str.contains("137"));
+        // 137 check removed since chain_id is removed
     }
 }

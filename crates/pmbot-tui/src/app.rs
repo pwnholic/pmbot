@@ -114,6 +114,7 @@ mod tests {
 
     fn make_world_state() -> WorldState {
         WorldState {
+            active_market_id: None,
             markets: HashMap::new(),
             positions: Vec::new(),
             open_orders: Vec::new(),

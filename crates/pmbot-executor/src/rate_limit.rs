@@ -151,8 +151,8 @@ mod tests {
     }
 
     #[test]
-    fn test_api_rate_limiter_default() {
-        let limiter = ApiRateLimiter::new();
+    fn test_try_acquire() {
+        let mut limiter = ApiRateLimiter::new();
         assert!(limiter.orders.try_acquire(1));
         assert!(limiter.reads.try_acquire(1));
         assert!(limiter.ws_messages.try_acquire(1));

@@ -118,7 +118,7 @@ impl Strategy for MarketMaker {
 
     fn evaluate(&mut self, world: &WorldState) -> Vec<Signal> {
         // Get the first market.
-        let (market_id, snap) = match world.markets.iter().next() {
+        let (market_id, snap) = match world.active_market_id.as_ref().and_then(|id| world.markets.get(id).map(|snap| (id, snap))) {
             Some(pair) => pair,
             None => return Vec::new(),
         };
@@ -347,6 +347,7 @@ mod tests {
         );
 
         WorldState {
+            active_market_id: Some(MarketId("m-mm".into())),
             markets,
             positions: Vec::new(),
             open_orders: Vec::new(),

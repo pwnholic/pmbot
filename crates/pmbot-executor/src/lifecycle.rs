@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use rust_decimal::Decimal;
 
-use pmbot_core::types::{OrderId, Side, SignalId, TokenId};
+use pmbot_core::types::{MarketId, OrderId, Side, SignalId, TokenId};
 
 /// States an order can be in.
 #[derive(Debug, Clone)]
@@ -33,6 +33,7 @@ impl OrderState {
 #[derive(Debug, Clone)]
 pub struct TrackedOrder {
     pub signal_id: SignalId,
+    pub market_id: MarketId,
     pub state: OrderState,
     pub token_id: TokenId,
     pub side: Side,
@@ -60,6 +61,7 @@ impl TrackedOrder {
     /// Create a new tracked order in the `Created` state.
     pub fn new(
         signal_id: SignalId,
+        market_id: MarketId,
         token_id: TokenId,
         side: Side,
         price: Decimal,
@@ -67,6 +69,7 @@ impl TrackedOrder {
     ) -> Self {
         Self {
             signal_id,
+            market_id,
             state: OrderState::Created,
             token_id,
             side,
@@ -205,6 +208,7 @@ mod tests {
     fn make_order() -> TrackedOrder {
         TrackedOrder::new(
             SignalId::new(),
+            MarketId("test-m".into()),
             TokenId("tok1".into()),
             Side::Buy,
             dec!(0.55),

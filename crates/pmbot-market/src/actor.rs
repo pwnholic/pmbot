@@ -84,6 +84,7 @@ impl MarketActor {
             min_volume: Decimal::from(self.config.min_volume),
             tags: self.config.tags.clone(),
             market_type: self.config.market_type.clone(),
+            keyword: self.config.keyword.clone(),
             active_only: true,
         };
 
@@ -107,6 +108,12 @@ impl MarketActor {
             "selected market"
         );
 
+        // Emit initial rotation event so WS consumers can subscribe
+        let _ = self.events_tx.send(MarketEvent::MarketRotation {
+            old: MarketId("initial".into()),
+            new: best.clone(),
+        });
+
         // Initialize book with the selected market's first token
         let token_id = best.token_ids.first().cloned().unwrap_or(TokenId("unknown".into()));
         self.book = LocalBook::new(best.id.clone(), token_id);
@@ -115,46 +122,100 @@ impl MarketActor {
         // Emit Connected event
         let _ = self.events_tx.send(MarketEvent::Connected);
 
+        let mut discovery_interval = tokio::time::interval(std::time::Duration::from_secs(self.config.discovery_interval_secs));
+
         // Step 2: Process book messages
-        while let Some(msg) = book_rx.recv().await {
-            // Check rotation
-            if self.rotator.should_rotate() {
-                info!("market rotation needed");
-                // In a full implementation, we'd discover the next market here.
-                // For now, just log and continue processing.
-            }
-
-            let ts = chrono::Utc::now();
-
-            match msg {
-                RawBookMessage::Snapshot { bids, asks } => {
-                    self.book.apply_snapshot(bids, asks, ts);
+        loop {
+            tokio::select! {
+                _ = discovery_interval.tick() => {
+                    // Check rotation
+                    if self.rotator.should_rotate() {
+                        info!("market rotation needed");
+                        let filters = crate::discovery::DiscoveryFilters {
+                            min_liquidity: rust_decimal::Decimal::from(self.config.min_liquidity),
+                            min_volume: rust_decimal::Decimal::from(self.config.min_volume),
+                            tags: self.config.tags.clone(),
+                            market_type: self.config.market_type.clone(),
+                            keyword: self.config.keyword.clone(),
+                            active_only: true,
+                        };
+                        match discovery.discover(&filters).await {
+                            Ok(mut markets) => {
+                                // Find the most liquid active market
+                                markets.sort_by(|a, b| b.liquidity.cmp(&a.liquidity));
+                                if let Some(new_market) = markets.into_iter().find(|m| m.active && m.liquidity > rust_decimal::Decimal::ZERO) {
+                                    let old_market = self.rotator.current_market().cloned();
+                                    
+                                    // Initialize new book
+                                    let token_id = new_market.token_ids.first().cloned().unwrap_or(pmbot_core::types::TokenId("unknown".into()));
+                                    self.book = crate::book::LocalBook::new(new_market.id.clone(), token_id);
+                                    self.rotator.set_current(new_market.clone());
+                                    
+                                    if let Some(old) = old_market {
+                                        let _ = self.events_tx.send(pmbot_core::messages::MarketEvent::MarketRotation {
+                                            old: old.id,
+                                            new: new_market,
+                                        });
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                warn!(%e, "failed to discover new market during rotation");
+                            }
+                        }
+                    }
                 }
-                RawBookMessage::Delta {
-                    bid_updates,
-                    ask_updates,
-                } => {
-                    self.book.apply_delta(&bid_updates, &ask_updates, ts);
+                msg_opt = book_rx.recv() => {
+                    match msg_opt {
+                        Some(msg) => {
+                            let ts = chrono::Utc::now();
+
+                            match msg {
+                                RawBookMessage::Snapshot { bids, asks } => {
+                                    self.book.apply_snapshot(bids, asks, ts);
+                                }
+                                RawBookMessage::Delta {
+                                    bid_updates,
+                                    ask_updates,
+                                } => {
+                                    self.book.apply_delta(&bid_updates, &ask_updates, ts);
+                                }
+                            }
+
+                            // Update price tracker with mid price
+                            let snapshot = self.book.snapshot();
+                            if let Some(mid) = snapshot.mid_price() {
+                                let best_bid = snapshot.bids.first().map(|l| l.price).unwrap_or(Decimal::ZERO);
+                                let best_ask = snapshot.asks.first().map(|l| l.price).unwrap_or(Decimal::ZERO);
+                                info!(
+                                    market_id = %snapshot.market_id,
+                                    bid = %best_bid,
+                                    ask = %best_ask,
+                                    mid = %mid,
+                                    "Polymarket Book Update"
+                                );
+
+                                self.tracker.record(mid, ts);
+
+                                let _ = self.events_tx.send(MarketEvent::PriceChange {
+                                    market_id: snapshot.market_id.clone(),
+                                    token_id: snapshot.token_id.clone(),
+                                    price: mid,
+                                });
+                            }
+
+                            // Emit book update
+                            let _ = self.events_tx.send(MarketEvent::BookUpdate {
+                                market_id: snapshot.market_id.clone(),
+                                book: Arc::new(snapshot),
+                            });
+                        }
+                        None => {
+                            break;
+                        }
+                    }
                 }
             }
-
-            // Update price tracker with mid price
-            let snapshot = self.book.snapshot();
-            if let Some(mid) = snapshot.mid_price() {
-                self.tracker.record(mid, ts);
-
-                let _ = self.events_tx.send(MarketEvent::PriceChange {
-                    market_id: snapshot.market_id.clone(),
-                    token_id: snapshot.token_id.clone(),
-                    price: mid,
-                });
-            }
-
-            // Emit book update
-            let _ = self.events_tx.send(MarketEvent::BookUpdate {
-                market_id: snapshot.market_id.clone(),
-                book: Arc::new(snapshot),
-            });
         }
 
         // Channel closed => disconnected

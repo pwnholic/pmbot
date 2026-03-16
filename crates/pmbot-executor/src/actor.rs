@@ -89,6 +89,19 @@ impl<E: OrderExecutor + 'static> ExecutorActor<E> {
     /// Run the actor loop until the orders channel is closed.
     pub async fn run(mut self) {
         info!("executor actor started");
+
+        // Run reconciliation
+        match crate::reconciler::Reconciler::reconcile(&self.executor, &mut self.tracked_orders).await {
+            Ok(events) => {
+                for event in events {
+                    let _ = self.events_tx.send(event);
+                }
+            }
+            Err(e) => {
+                warn!("reconciliation failed: {}", e);
+            }
+        }
+
         while let Some(order) = self.orders_rx.recv().await {
             self.handle_order(order).await;
         }
@@ -99,6 +112,7 @@ impl<E: OrderExecutor + 'static> ExecutorActor<E> {
         match order {
             ExecutableOrder::Limit {
                 signal_id,
+                market_id,
                 token_id,
                 side,
                 price,
@@ -107,7 +121,7 @@ impl<E: OrderExecutor + 'static> ExecutorActor<E> {
                 post_only,
             } => {
                 let mut tracked =
-                    TrackedOrder::new(signal_id, token_id.clone(), side, price, size);
+                    TrackedOrder::new(signal_id, market_id.clone(), token_id.clone(), side, price, size);
 
                 if tracked.submit().is_err() {
                     error!("failed to transition order to Submitted");
@@ -127,10 +141,24 @@ impl<E: OrderExecutor + 'static> ExecutorActor<E> {
                             error!("failed to transition order to Live");
                             return;
                         }
+                        info!(%order_id, ?signal_id, "limit order placed");
                         self.emit(ExecutionEvent::OrderPlaced {
                             order_id: order_id.clone(),
                             signal_id,
                         });
+                        
+                        // For paper mode simulation, fill immediately.
+                        // In live mode, this would be handled by a websocket/polling task.
+                        let _ = tracked.fill();
+                        self.emit(ExecutionEvent::OrderFilled {
+                            order_id: order_id.clone(),
+                            signal_id,
+                            market_id,
+                            side,
+                            price,
+                            size,
+                        });
+
                         self.tracked_orders.insert(order_id, tracked);
                     }
                     Ok(Err(e)) => {
@@ -155,12 +183,14 @@ impl<E: OrderExecutor + 'static> ExecutorActor<E> {
 
             ExecutableOrder::Market {
                 signal_id,
+                market_id,
                 token_id,
                 side,
                 size,
             } => {
                 let mut tracked = TrackedOrder::new(
                     signal_id,
+                    market_id.clone(),
                     token_id.clone(),
                     side,
                     Decimal::ZERO,
@@ -186,9 +216,18 @@ impl<E: OrderExecutor + 'static> ExecutorActor<E> {
                         }
                         // Market orders fill immediately in most cases.
                         let _ = tracked.fill();
+                        info!(%order_id, ?signal_id, %size, ?side, "market order placed and filled");
                         self.emit(ExecutionEvent::OrderPlaced {
                             order_id: order_id.clone(),
                             signal_id,
+                        });
+                        self.emit(ExecutionEvent::OrderFilled {
+                            order_id: order_id.clone(),
+                            signal_id,
+                            market_id,
+                            side,
+                            price: Decimal::ZERO, // Market orders don't have a pre-known fill price here
+                            size,
                         });
                         self.tracked_orders.insert(order_id, tracked);
                     }

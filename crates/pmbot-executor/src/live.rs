@@ -6,16 +6,22 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use rust_decimal::Decimal;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
-use alloy::signers::local::LocalSigner;
 use alloy::signers::k256::ecdsa::SigningKey;
+use alloy::signers::local::LocalSigner;
 use polymarket_client_sdk::auth::state::Authenticated;
 use polymarket_client_sdk::auth::Normal;
-use polymarket_client_sdk::clob::{self, types::{Amount, OrderType as SdkOrderType, Side as SdkSide}};
+use polymarket_client_sdk::clob::{
+    self,
+    types::{
+        request::OrdersRequest, Amount, OrderStatusType, OrderType as SdkOrderType,
+        Side as SdkSide,
+    },
+};
 use polymarket_client_sdk::types::U256;
 
-use pmbot_core::types::{OpenOrder, OrderId, OrderType, Side, TokenId};
+use pmbot_core::types::{MarketId, OpenOrder, OrderId, OrderType, Side, TokenId};
 
 use crate::actor::OrderExecutor;
 use crate::rate_limit::ApiRateLimiter;
@@ -69,6 +75,15 @@ impl LiveExecutor {
         }
     }
 
+    /// Map SDK `Side` back to our `Side`.
+    fn map_side_back(side: SdkSide) -> Side {
+        match side {
+            SdkSide::Buy => Side::Buy,
+            SdkSide::Sell => Side::Sell,
+            _ => Side::Buy, // fallback for future SDK variants
+        }
+    }
+
     /// Map our `OrderType` to the SDK's `OrderType`.
     fn map_order_type(ot: OrderType) -> SdkOrderType {
         match ot {
@@ -77,6 +92,27 @@ impl LiveExecutor {
             OrderType::Fok => SdkOrderType::FOK,
             OrderType::Fak => SdkOrderType::FAK,
         }
+    }
+
+    /// Map SDK `OrderType` back to our `OrderType`.
+    fn map_order_type_back(ot: &SdkOrderType) -> OrderType {
+        match ot {
+            SdkOrderType::GTC => OrderType::Gtc,
+            SdkOrderType::GTD => OrderType::Gtd,
+            SdkOrderType::FOK => OrderType::Fok,
+            SdkOrderType::FAK => OrderType::Fak,
+            _ => OrderType::Gtc, // fallback for future SDK variants
+        }
+    }
+
+    /// Acquire a rate-limit token for order submission.
+    async fn acquire_order_token(&self) {
+        self.rate_limiter.lock().await.orders.acquire(1).await;
+    }
+
+    /// Acquire a rate-limit token for read (GET) requests.
+    async fn acquire_read_token(&self) {
+        self.rate_limiter.lock().await.reads.acquire(1).await;
     }
 }
 
@@ -89,20 +125,31 @@ impl OrderExecutor for LiveExecutor {
         price: Decimal,
         size: Decimal,
         order_type: OrderType,
-        _post_only: bool,
+        post_only: bool,
     ) -> Result<OrderId> {
+        self.acquire_order_token().await;
+
         let sdk_token = Self::parse_token_id(token_id)?;
         let sdk_side = Self::map_side(side);
         let sdk_ot = Self::map_order_type(order_type);
 
-        let order = self
+        let mut builder = self
             .client
             .limit_order()
             .token_id(sdk_token)
             .price(price)
             .size(size)
             .side(sdk_side)
-            .order_type(sdk_ot)
+            .order_type(sdk_ot);
+
+        // post_only is only valid for GTC/GTD orders
+        if post_only
+            && matches!(order_type, OrderType::Gtc | OrderType::Gtd)
+        {
+            builder = builder.post_only(true);
+        }
+
+        let order = builder
             .build()
             .await
             .context("failed to build limit order")?;
@@ -119,8 +166,16 @@ impl OrderExecutor for LiveExecutor {
             .await
             .context("failed to post limit order")?;
 
+        if !response.success {
+            let err_msg = response
+                .error_msg
+                .unwrap_or_else(|| "unknown error".to_string());
+            warn!(%token_id, %side, %price, %size, %err_msg, "limit order rejected by CLOB");
+            anyhow::bail!("limit order rejected: {err_msg}");
+        }
+
         let order_id = OrderId(response.order_id.to_string());
-        info!(%order_id, %token_id, %side, %price, %size, "limit order placed");
+        info!(%order_id, %token_id, %side, %price, %size, status = %response.status, "limit order placed");
         Ok(order_id)
     }
 
@@ -130,6 +185,8 @@ impl OrderExecutor for LiveExecutor {
         side: Side,
         size: Decimal,
     ) -> Result<OrderId> {
+        self.acquire_order_token().await;
+
         let sdk_token = Self::parse_token_id(token_id)?;
         let sdk_side = Self::map_side(side);
 
@@ -155,12 +212,22 @@ impl OrderExecutor for LiveExecutor {
             .await
             .context("failed to post market order")?;
 
+        if !response.success {
+            let err_msg = response
+                .error_msg
+                .unwrap_or_else(|| "unknown error".to_string());
+            warn!(%token_id, %side, %size, %err_msg, "market order rejected by CLOB");
+            anyhow::bail!("market order rejected: {err_msg}");
+        }
+
         let order_id = OrderId(response.order_id.to_string());
-        info!(%order_id, %token_id, %side, %size, "market order placed");
+        info!(%order_id, %token_id, %side, %size, status = %response.status, "market order placed");
         Ok(order_id)
     }
 
     async fn cancel(&self, order_id: &OrderId) -> Result<()> {
+        self.acquire_order_token().await;
+
         self.client
             .cancel_order(&order_id.0)
             .await
@@ -170,6 +237,8 @@ impl OrderExecutor for LiveExecutor {
     }
 
     async fn cancel_all(&self) -> Result<()> {
+        self.acquire_order_token().await;
+
         self.client
             .cancel_all_orders()
             .await
@@ -179,14 +248,51 @@ impl OrderExecutor for LiveExecutor {
     }
 
     async fn get_open_orders(&self) -> Result<Vec<OpenOrder>> {
-        // Note: SDK API for fetching orders requires proper pagination handling.
-        // For now, return empty - this should be wired up properly when
-        // the SDK's orders() API is properly integrated.
-        // 
-        // TODO: Implement proper order fetching with:
-        // 1. Use client.orders() with cursor-based pagination
-        // 2. Filter for "open" status orders
-        // 3. Map response to our OpenOrder type
-        Ok(vec![])
+        self.acquire_read_token().await;
+
+        let request = OrdersRequest::default();
+        let mut all_orders = Vec::new();
+        let mut cursor: Option<String> = None;
+
+        loop {
+            let page = self
+                .client
+                .orders(&request, cursor)
+                .await
+                .context("failed to fetch open orders")?;
+
+            for sdk_order in &page.data {
+                // Only include live (open) orders
+                if sdk_order.status != OrderStatusType::Live {
+                    continue;
+                }
+
+                let filled = sdk_order.size_matched;
+                let remaining = sdk_order.original_size - filled;
+
+                all_orders.push(OpenOrder {
+                    order_id: OrderId(sdk_order.id.clone()),
+                    market_id: MarketId(format!("{:?}", sdk_order.market)),
+                    token_id: TokenId(sdk_order.asset_id.to_string()),
+                    side: Self::map_side_back(sdk_order.side),
+                    price: sdk_order.price,
+                    size: remaining,
+                    filled,
+                    order_type: Self::map_order_type_back(&sdk_order.order_type),
+                });
+            }
+
+            // If we got fewer than `limit` results, we've reached the last page
+            if page.count < page.limit || page.next_cursor.is_empty() {
+                break;
+            }
+
+            // Rate-limit subsequent pages
+            self.acquire_read_token().await;
+            cursor = Some(page.next_cursor);
+        }
+
+        debug!(count = all_orders.len(), "fetched open orders from CLOB");
+        Ok(all_orders)
     }
 }

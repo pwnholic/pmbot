@@ -26,7 +26,7 @@ enum FlashCrashState {
     Watching,
     /// Bought the dip; waiting for mean reversion.
     InPosition {
-        position_id: PositionId,
+        signal_id: SignalId,
         entry_price: Decimal,
         mean_price: Decimal,
     },
@@ -95,7 +95,7 @@ impl Strategy for FlashCrash {
 
     fn evaluate(&mut self, world: &WorldState) -> Vec<Signal> {
         // 1. Get the first market.
-        let (market_id, snap) = match world.markets.iter().next() {
+        let (market_id, snap) = match world.active_market_id.as_ref().and_then(|id| world.markets.get(id).map(|snap| (id, snap))) {
             Some(pair) => pair,
             None => return Vec::new(),
         };
@@ -156,13 +156,12 @@ impl Strategy for FlashCrash {
                 if drop > self.drop_threshold && snap.imbalance > self.min_recovery_imbalance
                 {
                     let signal_id = SignalId::new();
-                    let position_id = PositionId::new();
                     self.signals_generated += 1;
 
                     let edge = drop;
 
                     self.state = FlashCrashState::InPosition {
-                        position_id,
+                        signal_id,
                         entry_price: current_mid,
                         mean_price,
                     };
@@ -173,7 +172,7 @@ impl Strategy for FlashCrash {
                         market_id: market_id.clone(),
                         token_id,
                         side: Side::Buy,
-                        size: dec!(10),
+                        size: dec!(1),
                         price: snap.mid_price,
                         edge,
                         confidence: dec!(0.60),
@@ -184,7 +183,7 @@ impl Strategy for FlashCrash {
             }
 
             FlashCrashState::InPosition {
-                position_id,
+                signal_id,
                 entry_price,
                 mean_price,
             } => {
@@ -199,7 +198,7 @@ impl Strategy for FlashCrash {
                 );
 
                 if current_mid >= target {
-                    let position_id = *position_id;
+                    let original_signal_id = *signal_id;
                     let signal_id = SignalId::new();
                     self.signals_generated += 1;
 
@@ -208,7 +207,7 @@ impl Strategy for FlashCrash {
                     vec![Signal::Exit {
                         id: signal_id,
                         strategy: "flash_crash",
-                        position_id,
+                        signal_id: original_signal_id,
                         reason: ExitReason::StrategyExit,
                     }]
                 } else {
@@ -326,6 +325,7 @@ mod tests {
         );
 
         WorldState {
+            active_market_id: Some(MarketId("m-1".into())),
             markets,
             positions: Vec::new(),
             open_orders: Vec::new(),

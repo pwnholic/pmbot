@@ -17,6 +17,7 @@ use pmbot_core::types::{MarketId, OpenOrder, PricePoint, SpotPrice, Symbol};
 
 /// Accumulates events and builds immutable [`WorldState`] snapshots.
 pub struct WorldStateBuilder {
+    active_market_id: Option<MarketId>,
     markets: HashMap<MarketId, MarketSnapshot>,
     positions: Vec<Position>,
     open_orders: Vec<OpenOrder>,
@@ -29,6 +30,7 @@ impl WorldStateBuilder {
     /// Create a new builder with the given initial USDC balance.
     pub fn new(initial_balance: Decimal) -> Self {
         Self {
+            active_market_id: None,
             markets: HashMap::new(),
             positions: Vec::new(),
             open_orders: Vec::new(),
@@ -53,6 +55,10 @@ impl WorldStateBuilder {
                             price: mid,
                             timestamp: book.timestamp,
                         });
+                        // Cap price history to prevent unbounded memory growth
+                        if snap.price_history.len() > 3000 {
+                            snap.price_history.drain(0..500);
+                        }
                     }
                 }
             }
@@ -69,6 +75,7 @@ impl WorldStateBuilder {
                 // Remove the old market snapshot.
                 self.markets.remove(old);
 
+                self.active_market_id = Some(new.id.clone());
                 // Insert a fresh snapshot for the new market.
                 let snap = MarketSnapshot {
                     info: new.clone(),
@@ -187,6 +194,7 @@ impl WorldStateBuilder {
     /// Build an immutable snapshot of the current world state.
     pub fn snapshot(&self) -> WorldState {
         WorldState {
+            active_market_id: self.active_market_id.clone(),
             markets: self.markets.clone(),
             positions: self.positions.clone(),
             open_orders: self.open_orders.clone(),

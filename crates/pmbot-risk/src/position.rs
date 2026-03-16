@@ -42,6 +42,21 @@ pub struct TrackedPosition {
     pub signal_id: SignalId,
 }
 
+#[derive(Debug)]
+pub enum PositionError {
+    InvalidState(&'static str),
+}
+
+impl std::fmt::Display for PositionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidState(msg) => write!(f, "invalid state transition: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for PositionError {}
+
 impl TrackedPosition {
     /// Create a new tracked position in the Pending state.
     pub fn new(
@@ -63,8 +78,8 @@ impl TrackedPosition {
 
     /// Transition from Pending to Open on fill.
     ///
-    /// # Panics
-    /// Panics if the position is not in the Pending state.
+    /// # Errors
+    /// Returns `PositionError` if the position is not in the Pending state.
     pub fn open(
         &mut self,
         fill_price: Decimal,
@@ -72,11 +87,10 @@ impl TrackedPosition {
         side: Side,
         tp_price: Decimal,
         sl_price: Decimal,
-    ) {
-        assert!(
-            matches!(self.state, PositionState::Pending { .. }),
-            "can only open a Pending position"
-        );
+    ) -> Result<(), PositionError> {
+        if !matches!(self.state, PositionState::Pending { .. }) {
+            return Err(PositionError::InvalidState("can only open a Pending position"));
+        }
         self.state = PositionState::Open {
             entry_price: fill_price,
             size,
@@ -85,28 +99,30 @@ impl TrackedPosition {
             tp_price,
             sl_price,
         };
+        Ok(())
     }
 
     /// Transition from Open to Closing when an exit order is submitted.
     ///
     /// Returns the entry price and side for order construction.
     ///
-    /// # Panics
-    /// Panics if the position is not in the Open state.
-    pub fn start_closing(&mut self, exit_order_id: OrderId) {
-        assert!(
-            matches!(self.state, PositionState::Open { .. }),
-            "can only start closing an Open position"
-        );
+    /// # Errors
+    /// Returns `PositionError` if the position is not in the Open state.
+    pub fn start_closing(&mut self, exit_order_id: OrderId) -> Result<(Decimal, Side), PositionError> {
+        let (size, side) = match self.state {
+            PositionState::Open { size, side, .. } => (size, side),
+            _ => return Err(PositionError::InvalidState("can only start closing an Open position")),
+        };
         self.state = PositionState::Closing { exit_order_id };
+        Ok((size, side))
     }
 
     /// Transition from Closing to Closed when the exit fill arrives.
     ///
     /// Computes PnL based on the entry/exit prices and side.
     ///
-    /// # Panics
-    /// Panics if the position is not in the Closing state. Requires that the
+    /// # Errors
+    /// Returns `PositionError` if the position is not in the Closing state. Requires that the
     /// caller has captured the entry data before calling `start_closing`.
     pub fn close(
         &mut self,
@@ -115,11 +131,10 @@ impl TrackedPosition {
         size: Decimal,
         side: Side,
         opened_at: DateTime<Utc>,
-    ) {
-        assert!(
-            matches!(self.state, PositionState::Closing { .. }),
-            "can only close a Closing position"
-        );
+    ) -> Result<(), PositionError> {
+        if !matches!(self.state, PositionState::Closing { .. }) {
+            return Err(PositionError::InvalidState("can only close a Closing position"));
+        }
         let pnl = compute_pnl(entry_price, exit_price, size, side);
         let duration = Utc::now() - opened_at;
         self.state = PositionState::Closed {
@@ -128,6 +143,7 @@ impl TrackedPosition {
             pnl,
             duration,
         };
+        Ok(())
     }
 
     /// Calculate unrealized PnL for an Open position.
@@ -400,18 +416,18 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "can only open a Pending position")]
-    fn test_open_non_pending_panics() {
+    fn test_open_non_pending_returns_error() {
         let mut pos = make_pending();
-        pos.open(dec!(0.50), dec!(100), Side::Buy, dec!(0.70), dec!(0.35));
-        // Opening an already-open position should panic
-        pos.open(dec!(0.60), dec!(50), Side::Buy, dec!(0.80), dec!(0.40));
+        let _ = pos.open(dec!(0.50), dec!(100), Side::Buy, dec!(0.70), dec!(0.35));
+        // Opening an already-open position should return an error
+        let result = pos.open(dec!(0.60), dec!(50), Side::Buy, dec!(0.80), dec!(0.40));
+        assert!(result.is_err());
     }
 
     #[test]
-    #[should_panic(expected = "can only start closing an Open position")]
-    fn test_start_closing_non_open_panics() {
+    fn test_start_closing_non_open_returns_error() {
         let mut pos = make_pending();
-        pos.start_closing(OrderId("exit-1".into()));
+        let result = pos.start_closing(OrderId("exit-1".into()));
+        assert!(result.is_err());
     }
 }

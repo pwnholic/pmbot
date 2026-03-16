@@ -36,11 +36,12 @@ clean:
 
 run run-paper:
 	@echo "Starting in paper mode with strategies: $(STRATEGIES)..."
-	cargo run -- run --strategies $(STRATEGIES)
+	cargo run -- run --paper --strategies $(STRATEGIES)
 
 run-live:
 	@echo "Starting in LIVE mode with strategies: $(STRATEGIES)..."
-	PMBOT_PRIVATE_KEY=$$PMBOT_PRIVATE_KEY cargo run -- run --config config/default.toml --strategies $(STRATEGIES)
+	@test -f .env && set -a && . ./.env && set +a; \
+	cargo run -- run --live --strategies $(STRATEGIES)
 
 config-show:
 	cargo run -- config show

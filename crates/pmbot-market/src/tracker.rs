@@ -128,7 +128,7 @@ impl PriceTracker {
             / n;
 
         // Manual sqrt via Newton's method for Decimal
-        Some(decimal_sqrt(variance))
+        pmbot_core::math::decimal_sqrt(variance)
     }
 
     /// (min, max) price within the given window.
@@ -186,24 +186,6 @@ impl PriceTracker {
     pub fn is_empty(&self) -> bool {
         self.history.is_empty()
     }
-}
-
-/// Newton's method square root for Decimal.
-fn decimal_sqrt(val: Decimal) -> Decimal {
-    if val.is_zero() || val == Decimal::ONE {
-        return val;
-    }
-    // Start with val/2 as initial guess
-    let two = Decimal::TWO;
-    let mut guess = val / two;
-    // 20 iterations is more than enough for convergence
-    for _ in 0..20 {
-        if guess.is_zero() {
-            return Decimal::ZERO;
-        }
-        guess = (guess + val / guess) / two;
-    }
-    guess
 }
 
 #[cfg(test)]

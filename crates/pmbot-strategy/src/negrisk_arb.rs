@@ -30,7 +30,7 @@ enum NegRiskState {
     Watching,
     /// Holding a position on a mispriced outcome.
     InPosition {
-        position_id: PositionId,
+        signal_id: SignalId,
         direction: ArbDirection,
         condition_id: String,
     },
@@ -143,12 +143,11 @@ impl Strategy for NegRiskArb {
                         };
 
                         let signal_id = SignalId::new();
-                        let position_id = PositionId::new();
                         self.signals_generated += 1;
 
                         let edge = deviation;
                         self.state = NegRiskState::InPosition {
-                            position_id,
+                            signal_id,
                             direction: ArbDirection::SellOverpriced,
                             condition_id: condition_id.to_string(),
                         };
@@ -166,7 +165,7 @@ impl Strategy for NegRiskArb {
                             market_id: (*target_id).clone(),
                             token_id,
                             side: Side::Sell,
-                            size: dec!(10),
+                            size: dec!(1),
                             price: target_snap.mid_price,
                             edge,
                             confidence: dec!(0.80),
@@ -184,12 +183,11 @@ impl Strategy for NegRiskArb {
                         };
 
                         let signal_id = SignalId::new();
-                        let position_id = PositionId::new();
                         self.signals_generated += 1;
 
                         let edge = deviation.abs();
                         self.state = NegRiskState::InPosition {
-                            position_id,
+                            signal_id,
                             direction: ArbDirection::BuyUnderpriced,
                             condition_id: condition_id.to_string(),
                         };
@@ -207,7 +205,7 @@ impl Strategy for NegRiskArb {
                             market_id: (*target_id).clone(),
                             token_id,
                             side: Side::Buy,
-                            size: dec!(10),
+                            size: dec!(1),
                             price: target_snap.mid_price,
                             edge,
                             confidence: dec!(0.80),
@@ -218,7 +216,7 @@ impl Strategy for NegRiskArb {
             }
 
             NegRiskState::InPosition {
-                position_id,
+                signal_id,
                 condition_id,
                 ..
             } => {
@@ -239,7 +237,7 @@ impl Strategy for NegRiskArb {
                     if all_have_mid {
                         let deviation = (sum - Decimal::ONE).abs();
                         if deviation <= self.sum_deviation_threshold {
-                            let position_id = *position_id;
+                            let original_signal_id = *signal_id;
                             let signal_id = SignalId::new();
                             self.signals_generated += 1;
 
@@ -254,7 +252,7 @@ impl Strategy for NegRiskArb {
                             return vec![Signal::Exit {
                                 id: signal_id,
                                 strategy: "negrisk_arb",
-                                position_id,
+                                signal_id: original_signal_id,
                                 reason: ExitReason::StrategyExit,
                             }];
                         }
@@ -364,6 +362,7 @@ mod tests {
         }
 
         WorldState {
+            active_market_id: None,
             markets,
             positions: Vec::new(),
             open_orders: Vec::new(),
@@ -379,6 +378,7 @@ mod tests {
         let mut strat = NegRiskArb::new(dec!(0.02));
         // Empty world
         let world = WorldState {
+            active_market_id: None,
             markets: HashMap::new(),
             positions: Vec::new(),
             open_orders: Vec::new(),

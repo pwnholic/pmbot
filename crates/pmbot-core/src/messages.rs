@@ -70,7 +70,7 @@ pub enum Signal {
     Exit {
         id: SignalId,
         strategy: &'static str,
-        position_id: PositionId,
+        signal_id: SignalId, // The ID of the original Enter signal
         reason: ExitReason,
     },
     Amend {
@@ -103,6 +103,7 @@ impl Signal {
 pub enum ExecutableOrder {
     Limit {
         signal_id: SignalId,
+        market_id: MarketId,
         token_id: TokenId,
         side: Side,
         price: Decimal,
@@ -112,6 +113,7 @@ pub enum ExecutableOrder {
     },
     Market {
         signal_id: SignalId,
+        market_id: MarketId,
         token_id: TokenId,
         side: Side,
         size: Decimal,
@@ -163,6 +165,7 @@ pub enum ExecutionEvent {
 /// Built every tick by the strategy actor, shared via `Arc`.
 #[derive(Debug, Clone)]
 pub struct WorldState {
+    pub active_market_id: Option<MarketId>,
     pub markets: std::collections::HashMap<MarketId, MarketSnapshot>,
     pub positions: Vec<Position>,
     pub open_orders: Vec<OpenOrder>,
