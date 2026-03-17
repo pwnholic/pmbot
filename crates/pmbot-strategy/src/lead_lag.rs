@@ -14,9 +14,7 @@ use rust_decimal_macros::dec;
 use tracing::debug;
 
 use pmbot_core::messages::{Signal, StrategyMetrics, WorldState};
-use pmbot_core::types::{
-    ExitReason, FillEvent, MarketId, MarketInfo, Side, SignalId, Symbol,
-};
+use pmbot_core::types::{ExitReason, FillEvent, MarketId, MarketInfo, Side, SignalId, Symbol};
 
 use crate::traits::Strategy;
 
@@ -115,7 +113,11 @@ impl Strategy for LeadLag {
         };
 
         // Get the first market (our trading target).
-        let (market_id, snap) = match world.active_market_id.as_ref().and_then(|id| world.markets.get(id).map(|snap| (id, snap))) {
+        let (market_id, snap) = match world
+            .active_market_id
+            .as_ref()
+            .and_then(|id| world.markets.get(id).map(|snap| (id, snap)))
+        {
             Some(pair) => pair,
             None => return Vec::new(),
         };
@@ -287,7 +289,10 @@ impl Strategy for LeadLag {
                     "threshold",
                     format!("{:.2}%", self.lag_threshold * dec!(100)),
                 ),
-                ("anchor", self.anchor_price.map_or("none".into(), |p| p.to_string())),
+                (
+                    "anchor",
+                    self.anchor_price.map_or("none".into(), |p| p.to_string()),
+                ),
             ],
         }
     }
@@ -310,10 +315,7 @@ mod tests {
         Utc.timestamp_opt(1_700_000_000 + secs, 0).unwrap()
     }
 
-    fn make_world(
-        btc_price: Option<Decimal>,
-        market_mid: Option<Decimal>,
-    ) -> WorldState {
+    fn make_world(btc_price: Option<Decimal>, market_mid: Option<Decimal>) -> WorldState {
         let mut external_prices = HashMap::new();
         if let Some(price) = btc_price {
             external_prices.insert(
@@ -373,6 +375,7 @@ mod tests {
             balance: dec!(1000),
             daily_pnl: Decimal::ZERO,
             external_prices,
+            network_latency: HashMap::new(),
             timestamp: ts(0),
         }
     }
@@ -419,9 +422,7 @@ mod tests {
         // With 0ms delay, should immediately enter.
         assert_eq!(signals.len(), 1);
         match &signals[0] {
-            Signal::Enter {
-                strategy, side, ..
-            } => {
+            Signal::Enter { strategy, side, .. } => {
                 assert_eq!(*strategy, "lead_lag");
                 assert_eq!(*side, Side::Buy);
             }
@@ -484,7 +485,9 @@ mod tests {
 
         assert_eq!(signals.len(), 1);
         match &signals[0] {
-            Signal::Exit { strategy, reason, .. } => {
+            Signal::Exit {
+                strategy, reason, ..
+            } => {
                 assert_eq!(*strategy, "lead_lag");
                 assert_eq!(*reason, ExitReason::StrategyExit);
             }

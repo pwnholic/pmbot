@@ -208,7 +208,7 @@ fn create_actor_channels(use_tui: bool) -> ActorChannels {
     let (book_tx, book_rx) = mpsc::channel(256);
     let (raw_trade_tx, raw_trade_rx) = mpsc::channel(256);
     let (shutdown_tx, _) = broadcast::channel(1);
-    let (position_tx, position_rx) = tokio::sync::watch::channel(PositionSnapshot { positions: vec![] });
+    let (position_tx, position_rx) = tokio::sync::watch::channel(PositionSnapshot { positions: vec![], daily_pnl: Decimal::ZERO });
     
     let (tui_tx, tui_rx) = if use_tui {
         let (tx, rx) = tokio::sync::watch::channel(None);

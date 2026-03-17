@@ -14,9 +14,7 @@ use rust_decimal_macros::dec;
 use tracing::debug;
 
 use pmbot_core::messages::{Signal, StrategyMetrics, WorldState};
-use pmbot_core::types::{
-    ExitReason, FillEvent, MarketId, MarketInfo, Side, SignalId,
-};
+use pmbot_core::types::{ExitReason, FillEvent, MarketId, MarketInfo, Side, SignalId};
 
 use crate::traits::Strategy;
 
@@ -277,12 +275,10 @@ impl Strategy for NegRiskArb {
             name: "negrisk_arb",
             state: self.state_name(),
             edge: match &self.state {
-                NegRiskState::InPosition { direction, .. } => {
-                    Some(match direction {
-                        ArbDirection::SellOverpriced => dec!(0.01),
-                        ArbDirection::BuyUnderpriced => dec!(0.01),
-                    })
-                }
+                NegRiskState::InPosition { direction, .. } => Some(match direction {
+                    ArbDirection::SellOverpriced => dec!(0.01),
+                    ArbDirection::BuyUnderpriced => dec!(0.01),
+                }),
                 _ => None,
             },
             signals_generated: self.signals_generated,
@@ -313,10 +309,7 @@ mod tests {
 
     /// Build a WorldState with multiple neg_risk markets sharing a condition_id.
     /// `outcomes` is a vec of (market_id, mid_price).
-    fn make_negrisk_world(
-        condition_id: &str,
-        outcomes: &[(&str, Decimal)],
-    ) -> WorldState {
+    fn make_negrisk_world(condition_id: &str, outcomes: &[(&str, Decimal)]) -> WorldState {
         let mut markets = HashMap::new();
 
         for (mid, price) in outcomes {
@@ -369,6 +362,7 @@ mod tests {
             balance: dec!(1000),
             daily_pnl: Decimal::ZERO,
             external_prices: HashMap::new(),
+            network_latency: HashMap::new(),
             timestamp: ts(0),
         }
     }
@@ -385,6 +379,7 @@ mod tests {
             balance: dec!(1000),
             daily_pnl: Decimal::ZERO,
             external_prices: HashMap::new(),
+            network_latency: HashMap::new(),
             timestamp: ts(0),
         };
         let signals = strat.evaluate(&world);

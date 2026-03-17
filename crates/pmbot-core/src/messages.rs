@@ -217,6 +217,8 @@ pub struct Position {
 #[derive(Debug, Clone)]
 pub struct PositionSnapshot {
     pub positions: Vec<Position>,
+    /// Realized daily PnL from the circuit breaker + sum of unrealized PnL from open positions.
+    pub daily_pnl: Decimal,
 }
 
 // ---------------------------------------------------------------------------

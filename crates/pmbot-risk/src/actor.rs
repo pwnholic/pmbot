@@ -266,13 +266,41 @@ impl RiskActor {
                 price,
                 size,
             } => {
-                // Find the pending position matching this signal
-                if let Some(pos) = self
+                // Check if this is a closing fill first
+                let is_closing = self
+                    .positions
+                    .values()
+                    .any(|p| p.signal_id == *signal_id && matches!(p.state, crate::position::PositionState::Closing { .. }));
+
+                if is_closing {
+                    // Find the closing position and close it
+                    if let Some(pos) = self
+                        .positions
+                        .values_mut()
+                        .find(|p| p.signal_id == *signal_id)
+                    {
+                        match pos.close(*price) {
+                            Ok(realized_pnl) => {
+                                info!(?signal_id, %price, %realized_pnl, "position closed on fill");
+                                self.breaker.update_pnl(realized_pnl);
+                            }
+                            Err(e) => {
+                                warn!(?signal_id, %e, "failed to close position");
+                            }
+                        }
+                    }
+                    // Remove closed positions
+                    self.positions.retain(|_, p| !matches!(p.state, crate::position::PositionState::Closed { .. }));
+                    self.breaker
+                        .update_position_count(self.open_position_count());
+                    self.broadcast_positions();
+                } else if let Some(pos) = self
                     .positions
                     .values_mut()
                     .find(|p| p.signal_id == *signal_id)
                     .filter(|p| matches!(p.state, crate::position::PositionState::Pending { .. }))
                 {
+                    // Opening fill for a pending position
                     let edge = Decimal::new(10, 2); // default edge for TP/SL computation
                     let (tp, sl) = compute_tp_sl(
                         *price,
@@ -448,7 +476,11 @@ impl RiskActor {
             })
             .collect();
 
-        let _ = self.position_tx.send(PositionSnapshot { positions });
+        // Total PnL = realized (from circuit breaker) + unrealized (from open positions)
+        let unrealized: Decimal = positions.iter().map(|p| p.unrealized_pnl).sum();
+        let daily_pnl = self.breaker.daily_pnl() + unrealized;
+
+        let _ = self.position_tx.send(PositionSnapshot { positions, daily_pnl });
     }
 }
 
@@ -523,7 +555,7 @@ mod tests {
         let (signal_tx, signal_rx) = mpsc::channel(16);
         let (order_tx, order_rx) = mpsc::channel(16);
         let (exec_tx, exec_rx) = broadcast::channel(16);
-        let (position_tx, _position_rx) = tokio::sync::watch::channel(PositionSnapshot { positions: vec![] });
+        let (position_tx, _position_rx) = tokio::sync::watch::channel(PositionSnapshot { positions: vec![], daily_pnl: Decimal::ZERO });
         let actor = RiskActor::new(&test_config(), signal_rx, order_tx, exec_rx, position_tx);
         (actor, signal_tx, order_rx, exec_tx)
     }
@@ -795,7 +827,7 @@ mod tests {
         let (signal_tx, signal_rx) = mpsc::channel(16);
         let (order_tx, mut order_rx) = mpsc::channel(16);
         let (exec_tx, exec_rx) = broadcast::channel(16);
-        let (position_tx, _position_rx) = tokio::sync::watch::channel(PositionSnapshot { positions: vec![] });
+        let (position_tx, _position_rx) = tokio::sync::watch::channel(PositionSnapshot { positions: vec![], daily_pnl: Decimal::ZERO });
         let actor = RiskActor::new(&test_config(), signal_rx, order_tx, exec_rx, position_tx);
 
         // Spawn actor

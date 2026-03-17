@@ -8,9 +8,7 @@ use rust_decimal_macros::dec;
 use tracing::{debug, info};
 
 use pmbot_core::messages::{Signal, StrategyMetrics, WorldState};
-use pmbot_core::types::{
-    ExitReason, FillEvent, MarketId, MarketInfo, Side, SignalId, Symbol,
-};
+use pmbot_core::types::{ExitReason, FillEvent, MarketId, MarketInfo, Side, SignalId, Symbol};
 
 use crate::traits::Strategy;
 
@@ -89,17 +87,15 @@ impl FairValue {
         if vol <= 0.0 || time_years <= 0.0 {
             return if spot > strike { 1.0 } else { 0.0 };
         }
-        let d2 = (f64::ln(spot / strike) - 0.5 * vol * vol * time_years)
-            / (vol * f64::sqrt(time_years));
-        
+        let d2 =
+            (f64::ln(spot / strike) - 0.5 * vol * vol * time_years) / (vol * f64::sqrt(time_years));
+
         // Approximation of the cumulative normal distribution Phi(d2)
         statrs::distribution::ContinuousCDF::<f64, f64>::cdf(
             &statrs::distribution::Normal::new(0.0, 1.0).unwrap(),
             d2,
         )
     }
-
-
 }
 
 impl Strategy for FairValue {
@@ -109,7 +105,11 @@ impl Strategy for FairValue {
 
     fn evaluate(&mut self, world: &WorldState) -> Vec<Signal> {
         // 1. Get active market.
-        let (market_id, snap) = match world.active_market_id.as_ref().and_then(|id| world.markets.get(id).map(|snap| (id, snap))) {
+        let (market_id, snap) = match world
+            .active_market_id
+            .as_ref()
+            .and_then(|id| world.markets.get(id).map(|snap| (id, snap)))
+        {
             Some(res) => res,
             None => return Vec::new(),
         };
@@ -247,7 +247,11 @@ impl Strategy for FairValue {
     }
 
     fn on_fill(&mut self, fill: &FillEvent) {
-        if let FairValueState::Entering { signal_id, entry_fv } = &self.state {
+        if let FairValueState::Entering {
+            signal_id,
+            entry_fv,
+        } = &self.state
+        {
             if *signal_id == fill.signal_id {
                 info!("fair_value: entry order filled, transitioning to InPosition");
                 self.state = FairValueState::InPosition {
@@ -257,7 +261,7 @@ impl Strategy for FairValue {
             }
         } else if let FairValueState::InPosition { signal_id: _, .. } = &self.state {
             // Check if this was our exit fill (we don't track the exit signal_id yet, but let's assume if it matches it's ours)
-            // Wait, the exit SignalId is new. 
+            // Wait, the exit SignalId is new.
             // Better logic: if we are InPosition and get a fill for the SAME original signal_id but opposite side?
             // Actually, RiskActor handles the position closing.
             // For simplicity, if we get ANY fill that isn't our Enter fill while InPosition, we don't necessarily reset.
@@ -279,7 +283,8 @@ impl Strategy for FairValue {
             state: self.state.name(),
             edge: self.last_fair_value.map(|_| {
                 match &self.state {
-                    FairValueState::InPosition { entry_fv, .. } | FairValueState::Entering { entry_fv, .. } => {
+                    FairValueState::InPosition { entry_fv, .. }
+                    | FairValueState::Entering { entry_fv, .. } => {
                         // Report the entry fair-value deviation.
                         (*entry_fv - dec!(0.5)).abs()
                     }
@@ -288,10 +293,7 @@ impl Strategy for FairValue {
             }),
             signals_generated: self.signals_generated,
             custom: vec![
-                (
-                    "vol_multiplier",
-                    format!("{:.2}", self.vol_multiplier),
-                ),
+                ("vol_multiplier", format!("{:.2}", self.vol_multiplier)),
                 (
                     "min_activation_edge",
                     format!("{:.2}", self.min_activation_edge),
@@ -304,12 +306,24 @@ impl Strategy for FairValue {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::{DateTime, Utc};
     use pmbot_core::messages::MarketSnapshot;
-    use pmbot_core::types::{PricePoint, SpotPrice};
+    use pmbot_core::types::{OrderId, OrderbookSnapshot, PricePoint, SpotPrice, TokenId};
+    use std::collections::HashMap;
     use std::sync::Arc;
 
     fn ts(secs_offset: i64) -> DateTime<Utc> {
         DateTime::from_timestamp(1_700_000_000 + secs_offset, 0).unwrap()
+    }
+
+    fn empty_book() -> Arc<OrderbookSnapshot> {
+        Arc::new(OrderbookSnapshot {
+            market_id: MarketId("m-1".into()),
+            token_id: TokenId("tok-1".into()),
+            bids: Vec::new(),
+            asks: Vec::new(),
+            timestamp: ts(0),
+        })
     }
 
     fn make_world(
@@ -347,8 +361,10 @@ mod tests {
             info.id.clone(),
             MarketSnapshot {
                 info: info.clone(),
+                book: empty_book(),
                 mid_price: market_mid,
                 spread: Some(dec!(0.01)),
+                imbalance: Decimal::ZERO,
                 price_history: Vec::new(),
             },
         );
@@ -361,6 +377,7 @@ mod tests {
             balance: dec!(1000),
             daily_pnl: Decimal::ZERO,
             external_prices,
+            network_latency: HashMap::new(),
             timestamp: ts(0),
         }
     }
@@ -390,9 +407,7 @@ mod tests {
 
         assert_eq!(signals.len(), 1);
         match &signals[0] {
-            Signal::Enter {
-                strategy, side, ..
-            } => {
+            Signal::Enter { strategy, side, .. } => {
                 assert_eq!(*strategy, "fair_value");
                 assert_eq!(*side, Side::Buy);
             }
@@ -440,7 +455,9 @@ mod tests {
         assert_eq!(signals.len(), 1);
         match &signals[0] {
             Signal::Exit {
-                strategy, signal_id: sid, ..
+                strategy,
+                signal_id: sid,
+                ..
             } => {
                 assert_eq!(*strategy, "fair_value");
                 assert_eq!(*sid, signal_id);
@@ -458,7 +475,22 @@ mod tests {
             entry_fv: dec!(0.60),
         };
 
-        strat.on_market_change(&MarketId("old".into()), &MarketInfo::default());
+        strat.on_market_change(
+            &MarketId("old".into()),
+            &MarketInfo {
+                id: MarketId("new".into()),
+                question: "BTC Up?".into(),
+                slug: "btc-up-new".into(),
+                outcomes: vec!["Yes".into(), "No".into()],
+                token_ids: vec![TokenId("tok-new".into())],
+                condition_id: "cond-new".into(),
+                neg_risk: false,
+                active: true,
+                end_date: None,
+                liquidity: dec!(10000),
+                volume: dec!(5000),
+            },
+        );
         assert!(matches!(strat.state, FairValueState::Watching));
         assert!(strat.last_fair_value.is_none());
     }

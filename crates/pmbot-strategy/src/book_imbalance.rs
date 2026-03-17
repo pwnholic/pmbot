@@ -11,9 +11,7 @@ use rust_decimal_macros::dec;
 use tracing::debug;
 
 use pmbot_core::messages::{Signal, StrategyMetrics, WorldState};
-use pmbot_core::types::{
-    ExitReason, FillEvent, MarketId, MarketInfo, Side, SignalId,
-};
+use pmbot_core::types::{ExitReason, FillEvent, MarketId, MarketInfo, Side, SignalId};
 
 use crate::traits::Strategy;
 
@@ -129,7 +127,11 @@ impl Strategy for BookImbalance {
 
     fn evaluate(&mut self, world: &WorldState) -> Vec<Signal> {
         // 1. Get the first market.
-        let (market_id, snap) = match world.active_market_id.as_ref().and_then(|id| world.markets.get(id).map(|snap| (id, snap))) {
+        let (market_id, snap) = match world
+            .active_market_id
+            .as_ref()
+            .and_then(|id| world.markets.get(id).map(|snap| (id, snap)))
+        {
             Some(pair) => pair,
             None => return Vec::new(),
         };
@@ -164,11 +166,7 @@ impl Strategy for BookImbalance {
                 }
 
                 // 4. Confirm momentum from price history.
-                if !Self::momentum_confirms(
-                    &snap.price_history,
-                    self.momentum_window,
-                    direction,
-                ) {
+                if !Self::momentum_confirms(&snap.price_history, self.momentum_window, direction) {
                     debug!("book_imbalance: imbalance detected but momentum does not confirm");
                     return Vec::new();
                 }
@@ -247,10 +245,7 @@ impl Strategy for BookImbalance {
             },
             signals_generated: self.signals_generated,
             custom: vec![
-                (
-                    "threshold",
-                    format!("{:.2}", self.threshold),
-                ),
+                ("threshold", format!("{:.2}", self.threshold)),
                 ("levels", self.levels.to_string()),
                 ("momentum_window", self.momentum_window.to_string()),
             ],
@@ -337,6 +332,7 @@ mod tests {
             balance: dec!(1000),
             daily_pnl: Decimal::ZERO,
             external_prices: HashMap::new(),
+            network_latency: HashMap::new(),
             timestamp: ts(0),
         }
     }
@@ -371,9 +367,7 @@ mod tests {
 
         assert_eq!(signals.len(), 1);
         match &signals[0] {
-            Signal::Enter {
-                strategy, side, ..
-            } => {
+            Signal::Enter { strategy, side, .. } => {
                 assert_eq!(*strategy, "book_imbalance");
                 assert_eq!(*side, Side::Buy);
             }
@@ -391,9 +385,7 @@ mod tests {
 
         assert_eq!(signals.len(), 1);
         match &signals[0] {
-            Signal::Enter {
-                strategy, side, ..
-            } => {
+            Signal::Enter { strategy, side, .. } => {
                 assert_eq!(*strategy, "book_imbalance");
                 assert_eq!(*side, Side::Sell);
             }

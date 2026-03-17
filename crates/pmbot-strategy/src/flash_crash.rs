@@ -10,9 +10,7 @@ use rust_decimal_macros::dec;
 use tracing::debug;
 
 use pmbot_core::messages::{Signal, StrategyMetrics, WorldState};
-use pmbot_core::types::{
-    ExitReason, FillEvent, MarketId, MarketInfo, Side, SignalId,
-};
+use pmbot_core::types::{ExitReason, FillEvent, MarketId, MarketInfo, Side, SignalId};
 
 use crate::traits::Strategy;
 
@@ -95,7 +93,11 @@ impl Strategy for FlashCrash {
 
     fn evaluate(&mut self, world: &WorldState) -> Vec<Signal> {
         // 1. Get the first market.
-        let (market_id, snap) = match world.active_market_id.as_ref().and_then(|id| world.markets.get(id).map(|snap| (id, snap))) {
+        let (market_id, snap) = match world
+            .active_market_id
+            .as_ref()
+            .and_then(|id| world.markets.get(id).map(|snap| (id, snap)))
+        {
             Some(pair) => pair,
             None => return Vec::new(),
         };
@@ -112,8 +114,7 @@ impl Strategy for FlashCrash {
 
         // 3. Compute mean from price_history within the lookback window.
         let now = world.timestamp;
-        let lookback_start = now
-            - chrono::Duration::seconds(self.lookback_secs as i64);
+        let lookback_start = now - chrono::Duration::seconds(self.lookback_secs as i64);
 
         let points_in_window: Vec<Decimal> = snap
             .price_history
@@ -153,8 +154,7 @@ impl Strategy for FlashCrash {
                 );
 
                 // Enter if drop exceeds threshold and book imbalance confirms recovery.
-                if drop > self.drop_threshold && snap.imbalance > self.min_recovery_imbalance
-                {
+                if drop > self.drop_threshold && snap.imbalance > self.min_recovery_imbalance {
                     let signal_id = SignalId::new();
                     self.signals_generated += 1;
 
@@ -188,8 +188,7 @@ impl Strategy for FlashCrash {
                 mean_price,
             } => {
                 // 6. Compute reversion target.
-                let target =
-                    *entry_price + (*mean_price - *entry_price) * self.reversion_target;
+                let target = *entry_price + (*mean_price - *entry_price) * self.reversion_target;
 
                 debug!(
                     current = %current_mid,
@@ -332,6 +331,7 @@ mod tests {
             balance: dec!(1000),
             daily_pnl: Decimal::ZERO,
             external_prices: HashMap::new(),
+            network_latency: HashMap::new(),
             timestamp: ts(0),
         }
     }
@@ -376,9 +376,7 @@ mod tests {
 
         assert_eq!(signals.len(), 1);
         match &signals[0] {
-            Signal::Enter {
-                strategy, side, ..
-            } => {
+            Signal::Enter { strategy, side, .. } => {
                 assert_eq!(*strategy, "flash_crash");
                 assert_eq!(*side, Side::Buy);
             }

@@ -130,6 +130,7 @@ impl StrategyActor {
                         Ok(()) => {
                             let snapshot = self.position_rx.borrow_and_update().clone();
                             self.world_builder.set_positions(snapshot.positions);
+                            self.world_builder.set_daily_pnl(snapshot.daily_pnl);
                             // Push updated world to TUI immediately
                             if let Some(tx) = &self.tui_tx {
                                 let world = self.world_builder.snapshot();
@@ -316,7 +317,7 @@ mod tests {
         let (feed_tx, feed_rx) = broadcast::channel(16);
         let (exec_tx, exec_rx) = broadcast::channel(16);
         let (signal_tx, mut signal_rx) = mpsc::channel(16);
-        let (_pos_tx, pos_rx) = tokio::sync::watch::channel(PositionSnapshot { positions: vec![] });
+        let (_pos_tx, pos_rx) = tokio::sync::watch::channel(PositionSnapshot { positions: vec![], daily_pnl: Decimal::ZERO });
 
         let mut registry = StrategyRegistry::new();
         registry.register(Box::new(AlwaysEnterStrategy::new()));
@@ -376,7 +377,7 @@ mod tests {
         let (_feed_tx, feed_rx) = broadcast::channel(16);
         let (_exec_tx, exec_rx) = broadcast::channel(16);
         let (signal_tx, mut signal_rx) = mpsc::channel(16);
-        let (_pos_tx, pos_rx) = tokio::sync::watch::channel(PositionSnapshot { positions: vec![] });
+        let (_pos_tx, pos_rx) = tokio::sync::watch::channel(PositionSnapshot { positions: vec![], daily_pnl: Decimal::ZERO });
 
         let mut registry = StrategyRegistry::new();
         registry.register(Box::new(AlwaysEnterStrategy::new()));

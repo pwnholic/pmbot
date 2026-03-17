@@ -121,6 +121,7 @@ mod tests {
             balance: dec!(1000),
             daily_pnl: dec!(50),
             external_prices: HashMap::new(),
+            network_latency: HashMap::new(),
             timestamp: Utc::now(),
         }
     }
