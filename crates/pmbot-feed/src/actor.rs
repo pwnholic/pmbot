@@ -17,10 +17,16 @@ use crate::vol::{VolComputer, VolMethod};
 
 /// A raw trade message from an external feed.
 #[derive(Debug, Clone)]
-pub struct RawTradeMessage {
+pub struct RawFeedMessageTrade {
     pub symbol: Symbol,
     pub price: Decimal,
     pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub enum RawFeedMessage {
+    Trade(RawFeedMessageTrade),
+    Latency(Duration),
 }
 
 // ---------------------------------------------------------------------------
@@ -31,7 +37,7 @@ pub struct RawTradeMessage {
 /// `FeedEvent`s to all downstream consumers.
 pub struct FeedActor {
     events_tx: broadcast::Sender<FeedEvent>,
-    raw_rx: mpsc::Receiver<RawTradeMessage>,
+    raw_rx: mpsc::Receiver<RawFeedMessage>,
     vol_computers: HashMap<Symbol, VolComputer>,
     vol_window: Duration,
 }
@@ -40,7 +46,7 @@ impl FeedActor {
     /// Create a new FeedActor.
     pub fn new(
         events_tx: broadcast::Sender<FeedEvent>,
-        raw_rx: mpsc::Receiver<RawTradeMessage>,
+        raw_rx: mpsc::Receiver<RawFeedMessage>,
         symbols: &[Symbol],
         vol_method: VolMethod,
         vol_window: Duration,
@@ -63,43 +69,50 @@ impl FeedActor {
         info!("FeedActor started");
 
         while let Some(msg) = self.raw_rx.recv().await {
-            self.handle_raw_trade(msg);
+            self.handle_raw_message(msg);
         }
 
         info!("FeedActor shutting down (raw channel closed)");
     }
 
-    fn handle_raw_trade(&mut self, msg: RawTradeMessage) {
-        info!(symbol = %msg.symbol, price = %msg.price, "Binance Trade Update");
+    fn handle_raw_message(&mut self, msg: RawFeedMessage) {
+        match msg {
+            RawFeedMessage::Trade(trade) => {
+                info!(symbol = %trade.symbol, price = %trade.price, "Binance Trade Update");
 
-        // Broadcast spot price
-        let spot_event = FeedEvent::SpotPrice {
-            symbol: msg.symbol.clone(),
-            price: msg.price,
-            timestamp: msg.timestamp,
-        };
-
-        if let Err(e) = self.events_tx.send(spot_event) {
-            warn!("no feed event subscribers: {e}");
-        }
-
-        // Update vol computer and broadcast vol if available
-        if let Some(vc) = self.vol_computers.get_mut(&msg.symbol) {
-            vc.record(msg.price, msg.timestamp);
-
-            if let Some(vol) = vc.realized_vol() {
-                let vol_event = FeedEvent::VolUpdate {
-                    symbol: msg.symbol.clone(),
-                    realized_vol: vol,
-                    window: self.vol_window,
+                // Broadcast spot price
+                let spot_event = FeedEvent::SpotPrice {
+                    symbol: trade.symbol.clone(),
+                    price: trade.price,
+                    timestamp: trade.timestamp,
                 };
 
-                if let Err(e) = self.events_tx.send(vol_event) {
-                    warn!("no feed event subscribers for vol: {e}");
+                if let Err(e) = self.events_tx.send(spot_event) {
+                    warn!("no feed event subscribers: {e}");
+                }
+
+                // Update vol computer and broadcast vol if available
+                if let Some(vc) = self.vol_computers.get_mut(&trade.symbol) {
+                    vc.record(trade.price, trade.timestamp);
+
+                    if let Some(vol) = vc.realized_vol() {
+                        let vol_event = FeedEvent::VolUpdate {
+                            symbol: trade.symbol.clone(),
+                            realized_vol: vol,
+                            window: self.vol_window,
+                        };
+
+                        if let Err(e) = self.events_tx.send(vol_event) {
+                            warn!("no feed event subscribers for vol: {e}");
+                        }
+                    }
+                } else {
+                    debug!(symbol = %trade.symbol, "no vol computer for symbol (untracked)");
                 }
             }
-        } else {
-            debug!(symbol = %msg.symbol, "no vol computer for symbol (untracked)");
+            RawFeedMessage::Latency(dur) => {
+                let _ = self.events_tx.send(FeedEvent::LatencyUpdate { latency: dur });
+            }
         }
     }
 }
@@ -137,11 +150,11 @@ mod tests {
 
         // Send a raw trade
         raw_tx
-            .send(RawTradeMessage {
+            .send(RawFeedMessage::Trade(RawFeedMessageTrade {
                 symbol: sym.clone(),
                 price: dec!(50000),
                 timestamp: ts(0),
-            })
+            }))
             .await
             .unwrap();
 
@@ -181,11 +194,11 @@ mod tests {
         // Send 3 trades (need 3 prices for 2 returns for rolling vol)
         for (i, price) in [dec!(50000), dec!(50100), dec!(49900)].iter().enumerate() {
             raw_tx
-                .send(RawTradeMessage {
+                .send(RawFeedMessage::Trade(RawFeedMessageTrade {
                     symbol: sym.clone(),
                     price: *price,
                     timestamp: ts(i as i64),
-                })
+                }))
                 .await
                 .unwrap();
         }
@@ -232,11 +245,11 @@ mod tests {
 
         // Send a trade for untracked symbol
         raw_tx
-            .send(RawTradeMessage {
+            .send(RawFeedMessage::Trade(RawFeedMessageTrade {
                 symbol: Symbol("DOGEUSDT".into()),
                 price: dec!(0.15),
                 timestamp: ts(0),
-            })
+            }))
             .await
             .unwrap();
 

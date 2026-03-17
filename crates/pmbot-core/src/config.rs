@@ -591,6 +591,8 @@ fn default_refresh_interval_ms() -> u64 {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TuiConfig {
+    #[serde(default)]
+    pub enabled: bool,
     #[serde(default = "default_refresh_rate_ms")]
     pub refresh_rate_ms: u64,
     #[serde(default = "default_log_buffer_size")]
@@ -600,6 +602,7 @@ pub struct TuiConfig {
 impl Default for TuiConfig {
     fn default() -> Self {
         Self {
+            enabled: false,
             refresh_rate_ms: default_refresh_rate_ms(),
             log_buffer_size: default_log_buffer_size(),
         }

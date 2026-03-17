@@ -28,6 +28,9 @@ pub enum MarketEvent {
         old: MarketId,
         new: MarketInfo,
     },
+    LatencyUpdate {
+        latency: Duration,
+    },
     Connected,
     Disconnected,
 }
@@ -47,6 +50,9 @@ pub enum FeedEvent {
         symbol: Symbol,
         realized_vol: Decimal,
         window: Duration,
+    },
+    LatencyUpdate {
+        latency: Duration,
     },
 }
 
@@ -172,6 +178,7 @@ pub struct WorldState {
     pub balance: Decimal,
     pub daily_pnl: Decimal,
     pub external_prices: std::collections::HashMap<Symbol, SpotPrice>,
+    pub network_latency: std::collections::HashMap<&'static str, Duration>,
     pub timestamp: DateTime<Utc>,
 }
 

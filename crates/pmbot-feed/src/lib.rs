@@ -8,6 +8,6 @@ pub mod actor;
 pub mod vol;
 pub mod ws;
 
-pub use actor::{FeedActor, RawTradeMessage};
+pub use actor::{FeedActor, RawFeedMessage};
 pub use vol::{VolComputer, VolMethod};
 pub use ws::run_binance_ws;

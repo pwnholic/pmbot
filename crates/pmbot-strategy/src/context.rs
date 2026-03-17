@@ -14,6 +14,7 @@ use pmbot_core::messages::{
     ExecutionEvent, FeedEvent, MarketEvent, MarketSnapshot, Position, WorldState,
 };
 use pmbot_core::types::{MarketId, OpenOrder, PricePoint, SpotPrice, Symbol};
+use std::time::Duration;
 
 /// Accumulates events and builds immutable [`WorldState`] snapshots.
 pub struct WorldStateBuilder {
@@ -24,6 +25,7 @@ pub struct WorldStateBuilder {
     balance: Decimal,
     daily_pnl: Decimal,
     external_prices: HashMap<Symbol, SpotPrice>,
+    network_latency: HashMap<&'static str, Duration>,
 }
 
 impl WorldStateBuilder {
@@ -37,6 +39,7 @@ impl WorldStateBuilder {
             balance: initial_balance,
             daily_pnl: Decimal::ZERO,
             external_prices: HashMap::new(),
+            network_latency: HashMap::new(),
         }
     }
 
@@ -97,6 +100,9 @@ impl WorldStateBuilder {
                 };
                 self.markets.insert(new.id.clone(), snap);
             }
+            MarketEvent::LatencyUpdate { latency } => {
+                self.network_latency.insert("polymarket", *latency);
+            }
             MarketEvent::Connected | MarketEvent::Disconnected => {
                 // No state changes needed for connection events.
             }
@@ -122,6 +128,9 @@ impl WorldStateBuilder {
             FeedEvent::VolUpdate { .. } => {
                 // Vol updates are informational; strategies can query
                 // the feed directly if needed. No world state change.
+            }
+            FeedEvent::LatencyUpdate { latency } => {
+                self.network_latency.insert("binance", *latency);
             }
         }
     }
@@ -201,6 +210,7 @@ impl WorldStateBuilder {
             balance: self.balance,
             daily_pnl: self.daily_pnl,
             external_prices: self.external_prices.clone(),
+            network_latency: self.network_latency.clone(),
             timestamp: Utc::now(),
         }
     }

@@ -119,10 +119,11 @@ impl MarketActor {
         self.book = LocalBook::new(best.id.clone(), token_id);
         self.rotator.set_current(best);
 
-        // Emit Connected event
         let _ = self.events_tx.send(MarketEvent::Connected);
 
         let mut discovery_interval = tokio::time::interval(std::time::Duration::from_secs(self.config.discovery_interval_secs));
+        let mut ping_interval = tokio::time::interval(std::time::Duration::from_secs(10));
+        let reqwest_client = reqwest::Client::new();
 
         // Step 2: Process book messages
         loop {
@@ -162,6 +163,21 @@ impl MarketActor {
                             Err(e) => {
                                 warn!(%e, "failed to discover new market during rotation");
                             }
+                        }
+                    }
+                }
+                _ = ping_interval.tick() => {
+                    let start = std::time::Instant::now();
+                    // We just do a lightweight HEAD or GET to the polymarket time endpoint
+                    let res = reqwest_client.get("https://clob.polymarket.com/time").send().await;
+                    match res {
+                        Ok(_) => {
+                            let latency = start.elapsed();
+                            let _ = self.events_tx.send(MarketEvent::LatencyUpdate { latency });
+                        }
+                        Err(e) => {
+                            // Suppress verbose network errors here to avoid spam, just warn once
+                            warn!(%e, "failed to ping polymarket clob api");
                         }
                     }
                 }

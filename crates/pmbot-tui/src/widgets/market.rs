@@ -4,6 +4,9 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 
+use std::collections::HashMap;
+use std::time::Duration;
+
 use pmbot_core::messages::MarketSnapshot;
 
 /// Widget that renders market information.
@@ -11,12 +14,16 @@ use pmbot_core::messages::MarketSnapshot;
 /// Shows market slug, mid price, spread, imbalance, and time to expiry.
 pub struct MarketWidget<'a> {
     snapshot: Option<&'a MarketSnapshot>,
+    latency: &'a HashMap<&'static str, Duration>,
 }
 
 impl<'a> MarketWidget<'a> {
-    /// Create a new market widget, optionally with a snapshot.
-    pub fn new(snapshot: Option<&'a MarketSnapshot>) -> Self {
-        Self { snapshot }
+    /// Create a new market widget, optionally with a snapshot and latency map.
+    pub fn new(
+        snapshot: Option<&'a MarketSnapshot>,
+        latency: &'a HashMap<&'static str, Duration>,
+    ) -> Self {
+        Self { snapshot, latency }
     }
 }
 
@@ -92,6 +99,24 @@ impl Widget for MarketWidget<'_> {
         lines.push(Line::from(vec![
             Span::styled("Expiry:    ", Style::default().fg(Color::DarkGray)),
             Span::raw(expiry_str),
+        ]));
+
+        // Network latency
+        lines.push(Line::from("")); // spacer
+        let binance_ping = self.latency.get("binance")
+            .map(|dur| format!("{}ms", dur.as_millis()))
+            .unwrap_or_else(|| "---".into());
+
+        let poly_ping = self.latency.get("polymarket")
+            .map(|dur| format!("{}ms", dur.as_millis()))
+            .unwrap_or_else(|| "---".into());
+
+        lines.push(Line::from(vec![
+             Span::styled("Ping:      ", Style::default().fg(Color::DarkGray)),
+             Span::styled("Binance ", Style::default().fg(Color::Yellow)),
+             Span::raw(binance_ping),
+             Span::styled(" | Poly ", Style::default().fg(Color::Blue)),
+             Span::raw(poly_ping),
         ]));
 
         let paragraph = Paragraph::new(lines);

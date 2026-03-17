@@ -419,6 +419,7 @@ fn default_world() -> WorldState {
         balance: Decimal::new(1_000_000, 0), // large default so tests pass
         daily_pnl: Decimal::ZERO,
         external_prices: HashMap::new(),
+        network_latency: HashMap::new(),
         timestamp: chrono::Utc::now(),
     }
 }

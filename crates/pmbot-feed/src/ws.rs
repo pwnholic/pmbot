@@ -13,7 +13,7 @@ use tracing::{error, info, warn};
 
 use pmbot_core::types::Symbol;
 
-use crate::actor::RawTradeMessage;
+use crate::actor::{RawFeedMessage, RawFeedMessageTrade};
 
 /// Binance trade event from the WebSocket stream.
 #[derive(Debug, Deserialize)]
@@ -39,7 +39,7 @@ struct CombinedStream {
 /// Sends parsed trades into `trade_tx`; exits cleanly on `shutdown`.
 pub async fn run_binance_ws(
     symbols: &[Symbol],
-    trade_tx: mpsc::Sender<RawTradeMessage>,
+    msg_tx: mpsc::Sender<RawFeedMessage>,
     mut shutdown: broadcast::Receiver<()>,
 ) {
     if symbols.is_empty() {
@@ -62,7 +62,7 @@ pub async fn run_binance_ws(
     loop {
         info!(%url, "connecting to Binance WebSocket");
 
-        match connect_and_stream(&url, &trade_tx, &mut shutdown).await {
+        match connect_and_stream(&url, &msg_tx, &mut shutdown).await {
             Ok(()) => {
                 info!("Binance WebSocket shutting down");
                 return;
@@ -86,7 +86,7 @@ pub async fn run_binance_ws(
 
 async fn connect_and_stream(
     url: &str,
-    trade_tx: &mpsc::Sender<RawTradeMessage>,
+    msg_tx: &mpsc::Sender<RawFeedMessage>,
     shutdown: &mut broadcast::Receiver<()>,
 ) -> Result<()> {
     let (ws_stream, _response) = tokio_tungstenite::connect_async(url)
@@ -95,7 +95,10 @@ async fn connect_and_stream(
 
     info!("connected to Binance WebSocket");
 
-    let (_write, mut read) = ws_stream.split();
+    let (mut write, mut read) = ws_stream.split();
+    let mut ping_interval = tokio::time::interval(Duration::from_secs(5));
+    // When we sent the last ping
+    let mut last_ping_time: Option<std::time::Instant> = None;
 
     loop {
         tokio::select! {
@@ -113,7 +116,7 @@ async fn connect_and_stream(
                         match trade {
                             Ok(t) => {
                                 if let Some(msg) = parse_trade(&t) {
-                                    if trade_tx.send(msg).await.is_err() {
+                                    if msg_tx.send(RawFeedMessage::Trade(msg)).await.is_err() {
                                         return Ok(()); // channel closed
                                     }
                                 }
@@ -127,7 +130,16 @@ async fn connect_and_stream(
                         warn!("Binance WebSocket closed by server");
                         anyhow::bail!("WebSocket closed by server");
                     }
-                    Some(Ok(_)) => {} // Ping, Pong, Binary — ignore
+                    Some(Ok(tokio_tungstenite::tungstenite::Message::Pong(_))) => {
+                        if let Some(sent) = last_ping_time.take() {
+                            let latency = sent.elapsed();
+                            // Send latency update to actor
+                            if msg_tx.send(RawFeedMessage::Latency(latency)).await.is_err() {
+                                return Ok(());
+                            }
+                        }
+                    }
+                    Some(Ok(_)) => {} // Other Ping, Binary — ignore
                     Some(Err(e)) => {
                         anyhow::bail!("WebSocket read error: {e}");
                     }
@@ -136,15 +148,21 @@ async fn connect_and_stream(
                     }
                 }
             }
+            _ = ping_interval.tick() => {
+                last_ping_time = Some(std::time::Instant::now());
+                if futures::SinkExt::send(&mut write, tokio_tungstenite::tungstenite::Message::Ping(vec![].into())).await.is_err() {
+                    return Ok(());
+                }
+            }
         }
     }
 }
 
-fn parse_trade(trade: &BinanceTrade) -> Option<RawTradeMessage> {
+fn parse_trade(trade: &BinanceTrade) -> Option<RawFeedMessageTrade> {
     let price = trade.p.parse::<Decimal>().ok()?;
     let timestamp = Utc.timestamp_millis_opt(trade.trade_time).single()?;
 
-    Some(RawTradeMessage {
+    Some(RawFeedMessageTrade {
         symbol: Symbol(trade.s.clone()),
         price,
         timestamp,

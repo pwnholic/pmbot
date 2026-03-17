@@ -13,7 +13,7 @@ use pmbot_core::BotConfig;
 use pmbot_core::messages::{ExecutableOrder, ExecutionEvent, FeedEvent, MarketEvent, Signal};
 use pmbot_core::types::{MarketId, Symbol};
 use pmbot_executor::{ExecutorActor, LiveExecutor, PaperExecutor};
-use pmbot_feed::{FeedActor, RawTradeMessage, VolMethod, run_binance_ws};
+use pmbot_feed::{FeedActor, RawFeedMessage, VolMethod, run_binance_ws};
 use pmbot_market::actor::RawBookMessage;
 use pmbot_market::{GammaDiscovery, MarketActor};
 use pmbot_risk::RiskActor;
@@ -57,6 +57,10 @@ enum Command {
         /// Override enabled strategies (comma-separated).
         #[arg(long, value_delimiter = ',')]
         strategies: Option<Vec<String>>,
+
+        /// Enable the TUI dashboard.
+        #[arg(long)]
+        tui: bool,
     },
 
     /// Configuration management.
@@ -186,12 +190,14 @@ struct ActorChannels {
     #[allow(dead_code)]
     book_tx: mpsc::Sender<RawBookMessage>,
     book_rx: mpsc::Receiver<RawBookMessage>,
-    raw_trade_tx: mpsc::Sender<RawTradeMessage>,
-    raw_trade_rx: mpsc::Receiver<RawTradeMessage>,
+    raw_trade_tx: mpsc::Sender<RawFeedMessage>,
+    raw_trade_rx: mpsc::Receiver<RawFeedMessage>,
     shutdown_tx: broadcast::Sender<()>,
+    tui_tx: Option<tokio::sync::watch::Sender<Option<(pmbot_core::messages::WorldState, Vec<pmbot_core::messages::StrategyMetrics>)>>>,
+    tui_rx: Option<tokio::sync::watch::Receiver<Option<(pmbot_core::messages::WorldState, Vec<pmbot_core::messages::StrategyMetrics>)>>>,
 }
 
-fn create_actor_channels() -> ActorChannels {
+fn create_actor_channels(use_tui: bool) -> ActorChannels {
     let (market_event_tx, _) = broadcast::channel(2048);
     let (feed_event_tx, _) = broadcast::channel(2048);
     let (execution_event_tx, _) = broadcast::channel(2048);
@@ -200,6 +206,13 @@ fn create_actor_channels() -> ActorChannels {
     let (book_tx, book_rx) = mpsc::channel(256);
     let (raw_trade_tx, raw_trade_rx) = mpsc::channel(256);
     let (shutdown_tx, _) = broadcast::channel(1);
+    
+    let (tui_tx, tui_rx) = if use_tui {
+        let (tx, rx) = tokio::sync::watch::channel(None);
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    };
 
     ActorChannels {
         market_event_tx,
@@ -214,6 +227,8 @@ fn create_actor_channels() -> ActorChannels {
         raw_trade_tx,
         raw_trade_rx,
         shutdown_tx,
+        tui_tx,
+        tui_rx,
     }
 }
 
@@ -233,7 +248,8 @@ fn build_common_actors(
     signal_tx: mpsc::Sender<Signal>,
     signal_rx: mpsc::Receiver<Signal>,
     order_tx: mpsc::Sender<ExecutableOrder>,
-    raw_trade_rx: mpsc::Receiver<RawTradeMessage>,
+    raw_trade_rx: mpsc::Receiver<RawFeedMessage>,
+    tui_tx: Option<tokio::sync::watch::Sender<Option<(pmbot_core::messages::WorldState, Vec<pmbot_core::messages::StrategyMetrics>)>>>,
     registry: StrategyRegistry,
 ) -> CommonActors {
     let symbols: Vec<Symbol> = config
@@ -267,6 +283,7 @@ fn build_common_actors(
         feed_event_tx.subscribe(),
         execution_event_tx.subscribe(),
         signal_tx,
+        tui_tx,
         100,
     );
 
@@ -303,7 +320,8 @@ async fn run_paper(config: BotConfig, config_path: PathBuf) -> Result<()> {
         }
     });
 
-    let channels = create_actor_channels();
+    let use_tui = config.tui.enabled;
+    let mut channels = create_actor_channels(use_tui);
     let registry = build_strategies(&config);
     info!(count = registry.len(), "strategies loaded");
 
@@ -319,6 +337,7 @@ async fn run_paper(config: BotConfig, config_path: PathBuf) -> Result<()> {
         channels.signal_rx,
         channels.order_tx.clone(),
         channels.raw_trade_rx,
+        channels.tui_tx.take(),
         registry,
     );
 
@@ -365,19 +384,33 @@ async fn run_paper(config: BotConfig, config_path: PathBuf) -> Result<()> {
         executor_actor.run().await;
     });
 
-    info!("all actors running — press Ctrl+C to stop");
-    println!(
-        "\n  [PAPER] Bot is running in paper mode. Press Ctrl+C to stop.\n"
-    );
+    let tui_rx_opt = channels.tui_rx.take();
+    let tui_shutdown_tx = channels.shutdown_tx.clone();
+    let tui = tokio::spawn(async move {
+        if let Some(tui_rx) = tui_rx_opt {
+            if let Err(e) = pmbot_tui::run::run_tui(tui_rx, tui_shutdown_tx).await {
+                error!("TUI error: {}", e);
+            }
+        }
+    });
+
+    if !use_tui {
+        info!("all actors running — press Ctrl+C to stop");
+        println!(
+            "\n  [PAPER] Bot is running in paper mode. Press Ctrl+C to stop.\n"
+        );
+    }
 
     tokio::signal::ctrl_c()
         .await
         .context("Ctrl+C listener failed")?;
 
-    info!("shutting down...");
+    if !use_tui {
+        info!("shutting down...");
+    }
     let _ = channels.shutdown_tx.send(());
     let _ = tokio::time::timeout(Duration::from_secs(5), async {
-        let _ = tokio::join!(binance_ws, polymarket_ws, market, feed, strat, risk, exec);
+        let _ = tokio::join!(binance_ws, polymarket_ws, market, feed, strat, risk, exec, tui);
     }).await;
 
     println!("\n  Bot stopped. Goodbye!\n");
@@ -468,7 +501,8 @@ async fn run_live(config: BotConfig, config_path: PathBuf) -> Result<()> {
 
     info!(sig_type = ?config.wallet.signature_type, "authenticated with Polymarket CLOB");
 
-    let channels = create_actor_channels();
+    let use_tui = config.tui.enabled;
+    let mut channels = create_actor_channels(use_tui);
     let registry = build_strategies(&config);
     info!(count = registry.len(), "strategies loaded");
 
@@ -482,6 +516,7 @@ async fn run_live(config: BotConfig, config_path: PathBuf) -> Result<()> {
         channels.signal_rx,
         channels.order_tx.clone(),
         channels.raw_trade_rx,
+        channels.tui_tx.take(),
         registry,
     );
 
@@ -522,21 +557,37 @@ async fn run_live(config: BotConfig, config_path: PathBuf) -> Result<()> {
         executor_actor.run().await;
     });
 
-    info!("all actors running — press Ctrl+C to stop");
-    println!("\n  [LIVE] Bot is running in LIVE mode. Press Ctrl+C to stop.\n");
-    println!("  WARNING: REAL MONEY — orders will be submitted to Polymarket.\n");
+    let tui_rx_opt = channels.tui_rx.take();
+    let tui_shutdown_tx = channels.shutdown_tx.clone();
+    let tui = tokio::spawn(async move {
+        if let Some(tui_rx) = tui_rx_opt {
+            if let Err(e) = pmbot_tui::run::run_tui(tui_rx, tui_shutdown_tx).await {
+                error!("TUI error: {}", e);
+            }
+        }
+    });
+
+    if !use_tui {
+        info!("all actors running — press Ctrl+C to stop");
+        println!("\n  [LIVE] Bot is running in LIVE mode. Press Ctrl+C to stop.\n");
+        println!("  WARNING: REAL MONEY — orders will be submitted to Polymarket.\n");
+    }
 
     tokio::signal::ctrl_c()
         .await
         .context("Ctrl+C listener failed")?;
 
-    info!("shutting down...");
+    if !use_tui {
+        info!("shutting down...");
+    }
     let _ = channels.shutdown_tx.send(());
     let _ = tokio::time::timeout(Duration::from_secs(5), async {
-        let _ = tokio::join!(binance_ws, polymarket_ws, market, feed, strat, risk, exec);
+        let _ = tokio::join!(binance_ws, polymarket_ws, market, feed, strat, risk, exec, tui);
     }).await;
 
-    println!("\n  Bot stopped. Goodbye!\n");
+    if !use_tui {
+        println!("\n  Bot stopped. Goodbye!\n");
+    }
     Ok(())
 }
 
@@ -554,6 +605,7 @@ async fn main() -> Result<()> {
             paper,
             live,
             strategies,
+            tui,
         } => {
             let mut config = BotConfig::load(&config_path)
                 .with_context(|| format!("failed to load config from {}", config_path.display()))?;
@@ -567,8 +619,15 @@ async fn main() -> Result<()> {
                 config.general.strategies = strats;
             }
 
-            init_tracing(&config.general.log_level)?;
-            print_banner();
+            if tui {
+                config.tui.enabled = true;
+            }
+
+            let _log_guard = init_tracing(&config.general.log_level, config.tui.enabled)?;
+            
+            if !config.tui.enabled {
+                print_banner();
+            }
 
             println!(
                 "  Mode:       {}\n  Strategies: [{}]\n  Bankroll:   ${}\n",
@@ -598,17 +657,30 @@ async fn main() -> Result<()> {
     }
 }
 
-fn init_tracing(level: &str) -> Result<()> {
-    // Suppress noisy "unknown field" warnings from the SDK's serde deserializer.
-    // The Gamma API returns fields (feeType, eventMetadata) the SDK doesn't model yet.
+fn init_tracing(level: &str, use_tui: bool) -> Result<Option<tracing_appender::non_blocking::WorkerGuard>> {
     let default_filter = format!("{level},polymarket_client_sdk::serde_helpers=error");
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_filter));
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_target(true)
-        .with_thread_ids(false)
-        .with_file(false)
-        .with_line_number(false)
-        .init();
-    Ok(())
+
+    if use_tui {
+        let file_appender = tracing_appender::rolling::daily("logs", "pmbot.log");
+        let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_writer(non_blocking)
+            .with_target(true)
+            .with_thread_ids(false)
+            .with_file(false)
+            .with_line_number(false)
+            .init();
+        Ok(Some(guard))
+    } else {
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_target(true)
+            .with_thread_ids(false)
+            .with_file(false)
+            .with_line_number(false)
+            .init();
+        Ok(None)
+    }
 }

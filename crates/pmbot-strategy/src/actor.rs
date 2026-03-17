@@ -23,6 +23,7 @@ pub struct StrategyActor {
     feed_rx: broadcast::Receiver<FeedEvent>,
     execution_rx: broadcast::Receiver<ExecutionEvent>,
     signal_tx: mpsc::Sender<Signal>,
+    tui_tx: Option<tokio::sync::watch::Sender<Option<(pmbot_core::messages::WorldState, Vec<pmbot_core::messages::StrategyMetrics>)>>>,
     tick_interval_ms: u64,
 }
 
@@ -35,6 +36,7 @@ impl StrategyActor {
         feed_rx: broadcast::Receiver<FeedEvent>,
         execution_rx: broadcast::Receiver<ExecutionEvent>,
         signal_tx: mpsc::Sender<Signal>,
+        tui_tx: Option<tokio::sync::watch::Sender<Option<(pmbot_core::messages::WorldState, Vec<pmbot_core::messages::StrategyMetrics>)>>>,
         tick_interval_ms: u64,
     ) -> Self {
         Self {
@@ -44,6 +46,7 @@ impl StrategyActor {
             feed_rx,
             execution_rx,
             signal_tx,
+            tui_tx,
             tick_interval_ms,
         }
     }
@@ -197,6 +200,12 @@ impl StrategyActor {
                 }
             }
         }
+        
+        if let Some(tx) = &self.tui_tx {
+            let metrics: Vec<_> = self.registry.iter_mut().map(|s| s.metrics()).collect();
+            let _ = tx.send(Some((world, metrics)));
+        }
+
         true
     }
 }
@@ -298,6 +307,7 @@ mod tests {
             feed_rx,
             exec_rx,
             signal_tx,
+            None,
             50, // 50ms tick
         );
 
@@ -355,6 +365,7 @@ mod tests {
             feed_rx,
             exec_rx,
             signal_tx,
+            None,
             50,
         );
 
