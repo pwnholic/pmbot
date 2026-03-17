@@ -86,6 +86,11 @@ impl StrategyActor {
                                 pmbot_core::messages::MarketEvent::BookUpdate { .. } => true,
                                 pmbot_core::messages::MarketEvent::PriceChange { .. } => true,
                                 pmbot_core::messages::MarketEvent::MarketRotation { old, new } => {
+                                    // Cancel all open orders for the old market
+                                    let _ = self.signal_tx.send(pmbot_core::messages::Signal::CancelAll {
+                                        market_id: old.clone(),
+                                    }).await;
+                                    info!(%old, new_market = %new.id, "market rotation — sent CancelAll for old market");
                                     for strategy in self.registry.iter_mut() {
                                         strategy.on_market_change(&old, &new);
                                     }
@@ -352,22 +357,27 @@ mod tests {
             })
             .unwrap();
 
-        // Wait for at least one signal.
-        let signal = tokio::time::timeout(
-            Duration::from_secs(2),
-            signal_rx.recv(),
-        )
-        .await
-        .expect("timeout waiting for signal")
-        .expect("signal channel closed");
-
-        match signal {
-            Signal::Enter { strategy, side, .. } => {
-                assert_eq!(strategy, "always_enter");
-                assert_eq!(side, Side::Buy);
+        // Wait for signals — first may be CancelAll from rotation, then Enter
+        let mut found_enter = false;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while tokio::time::Instant::now() < deadline {
+            match tokio::time::timeout_at(deadline, signal_rx.recv()).await {
+                Ok(Some(Signal::Enter { strategy, side, .. })) => {
+                    assert_eq!(strategy, "always_enter");
+                    assert_eq!(side, Side::Buy);
+                    found_enter = true;
+                    break;
+                }
+                Ok(Some(Signal::CancelAll { .. })) => {
+                    // Expected on market rotation — skip and wait for Enter
+                    continue;
+                }
+                Ok(Some(other)) => panic!("unexpected signal: {other:?}"),
+                Ok(None) => panic!("signal channel closed"),
+                Err(_) => panic!("timeout waiting for Enter signal"),
             }
-            other => panic!("expected Enter signal, got: {other:?}"),
         }
+        assert!(found_enter, "never received Enter signal");
 
         // Shut down by dropping all senders.
         drop(market_tx);

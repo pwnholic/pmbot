@@ -20,7 +20,7 @@ no_trade_zone_secs = 30
 rotation_lookahead_secs = 15
 
 [risk]
-bankroll = 1000.0
+bankroll = 15.0
 kelly_fraction = 0.15
 max_position_pct = 0.05
 max_positions = 5

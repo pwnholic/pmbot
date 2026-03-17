@@ -7,7 +7,7 @@ use tokio::sync::{broadcast, mpsc};
 use tracing::{info, warn};
 
 use pmbot_core::config::RiskConfig;
-use pmbot_core::messages::{ExecutableOrder, ExecutionEvent, Position, PositionSnapshot, Signal, WorldState};
+use pmbot_core::messages::{ExecutableOrder, ExecutionEvent, MarketEvent, Position, PositionSnapshot, Signal, WorldState};
 use pmbot_core::types::*;
 
 use crate::kelly::fractional_kelly;
@@ -35,6 +35,7 @@ pub struct RiskActor {
     signal_rx: mpsc::Receiver<Signal>,
     order_tx: mpsc::Sender<ExecutableOrder>,
     execution_rx: broadcast::Receiver<ExecutionEvent>,
+    market_rx: broadcast::Receiver<MarketEvent>,
     position_tx: tokio::sync::watch::Sender<PositionSnapshot>,
     world_rx: tokio::sync::watch::Receiver<WorldState>,
 }
@@ -46,6 +47,7 @@ impl RiskActor {
         signal_rx: mpsc::Receiver<Signal>,
         order_tx: mpsc::Sender<ExecutableOrder>,
         execution_rx: broadcast::Receiver<ExecutionEvent>,
+        market_rx: broadcast::Receiver<MarketEvent>,
         position_tx: tokio::sync::watch::Sender<PositionSnapshot>,
         world_rx: tokio::sync::watch::Receiver<WorldState>,
     ) -> Self {
@@ -69,6 +71,7 @@ impl RiskActor {
             signal_rx,
             order_tx,
             execution_rx,
+            market_rx,
             position_tx,
             world_rx,
         }
@@ -394,6 +397,22 @@ impl RiskActor {
                         }
                     }
                 }
+                event = self.market_rx.recv() => {
+                    match event {
+                        Ok(MarketEvent::MarketRotation { old, new }) => {
+                            info!(%old, new_market = %new.id, "market rotation — force-closing all positions");
+                            self.force_close_all_positions();
+                        }
+                        Ok(_) => {} // ignore other market events
+                        Err(broadcast::error::RecvError::Closed) => {
+                            info!("market event channel closed");
+                            break;
+                        }
+                        Err(broadcast::error::RecvError::Lagged(n)) => {
+                            warn!(n, "risk actor lagged on market events");
+                        }
+                    }
+                }
                 result = self.world_rx.changed() => {
                     match result {
                         Ok(()) => {
@@ -497,6 +516,45 @@ impl RiskActor {
 
         let _ = self.position_tx.send(PositionSnapshot { positions, daily_pnl });
     }
+
+    /// Force-close all positions on market rotation.
+    ///
+    /// Computes realized PnL using current mid price, updates the circuit breaker,
+    /// clears all tracked positions, and broadcasts the empty state.
+    fn force_close_all_positions(&mut self) {
+        for (_, tp) in self.positions.iter() {
+            if let crate::position::PositionState::Open {
+                entry_price,
+                size,
+                side,
+                ..
+            } = &tp.state
+            {
+                let mid = self
+                    .world
+                    .markets
+                    .get(&tp.market_id)
+                    .and_then(|m| m.mid_price)
+                    .unwrap_or(*entry_price);
+                let realized = match side {
+                    Side::Buy => (mid - entry_price) * size,
+                    Side::Sell => (entry_price - mid) * size,
+                };
+                self.breaker.update_pnl(realized);
+                info!(
+                    strategy = tp.strategy,
+                    ?tp.signal_id,
+                    %realized,
+                    "force-closed position on market rotation"
+                );
+            }
+        }
+        let count = self.positions.len();
+        self.positions.clear();
+        self.breaker.update_position_count(0);
+        self.broadcast_positions();
+        info!(count, "cleared all positions after market rotation");
+    }
 }
 
 /// Compute take-profit and stop-loss prices.
@@ -572,7 +630,8 @@ mod tests {
         let (exec_tx, exec_rx) = broadcast::channel(16);
         let (position_tx, _position_rx) = tokio::sync::watch::channel(PositionSnapshot { positions: vec![], daily_pnl: Decimal::ZERO });
         let (_world_tx, world_rx) = tokio::sync::watch::channel(WorldState::default());
-        let actor = RiskActor::new(&test_config(), signal_rx, order_tx, exec_rx, position_tx, world_rx);
+        let (_market_tx, market_rx) = broadcast::channel::<MarketEvent>(16);
+        let actor = RiskActor::new(&test_config(), signal_rx, order_tx, exec_rx, market_rx, position_tx, world_rx);
         (actor, signal_tx, order_rx, exec_tx)
     }
 
@@ -845,7 +904,8 @@ mod tests {
         let (exec_tx, exec_rx) = broadcast::channel(16);
         let (position_tx, _position_rx) = tokio::sync::watch::channel(PositionSnapshot { positions: vec![], daily_pnl: Decimal::ZERO });
         let (_world_tx, world_rx) = tokio::sync::watch::channel(WorldState::default());
-        let actor = RiskActor::new(&test_config(), signal_rx, order_tx, exec_rx, position_tx, world_rx);
+        let (_market_tx, market_rx) = broadcast::channel::<MarketEvent>(16);
+        let actor = RiskActor::new(&test_config(), signal_rx, order_tx, exec_rx, market_rx, position_tx, world_rx);
 
         // Spawn actor
         let handle = tokio::spawn(actor.run());

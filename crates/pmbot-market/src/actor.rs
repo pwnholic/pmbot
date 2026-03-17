@@ -126,7 +126,7 @@ impl MarketActor {
         let mut discovery_interval = tokio::time::interval(std::time::Duration::from_secs(self.config.discovery_interval_secs));
         let mut ping_interval = tokio::time::interval(std::time::Duration::from_secs(10));
         // Fast expiry check — detects expired market between discovery ticks
-        let mut expiry_check_interval = tokio::time::interval(std::time::Duration::from_secs(5));
+        let mut expiry_check_interval = tokio::time::interval(std::time::Duration::from_secs(1));
         let mut rotation_pending = false;
         let reqwest_client = reqwest::Client::new();
 

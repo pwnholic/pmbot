@@ -308,6 +308,7 @@ fn build_common_actors(
         signal_rx,
         order_tx,
         execution_event_tx.subscribe(),
+        market_event_tx.subscribe(),
         position_tx,
         world_rx,
     );
@@ -366,9 +367,26 @@ async fn run_paper(config: BotConfig, config_path: PathBuf) -> Result<()> {
     // Use PaperExecutor for simulated order execution (no real orders)
     let paper_executor = PaperExecutor::new(
         config.risk.bankroll,
-        dec!(0.50), // Default mid price for simulation
+        dec!(0.50),
         MarketId("paper-mode".into()),
     );
+
+    // Spawn a task that updates paper executor's mid price from live market data
+    let paper_exec_clone = paper_executor.clone();
+    let mut paper_market_rx = channels.market_event_tx.subscribe();
+    tokio::spawn(async move {
+        loop {
+            match paper_market_rx.recv().await {
+                Ok(MarketEvent::PriceChange { price, .. }) => {
+                    paper_exec_clone.update_mid_price(price).await;
+                }
+                Ok(_) => {}
+                Err(broadcast::error::RecvError::Closed) => break,
+                Err(broadcast::error::RecvError::Lagged(_)) => {}
+            }
+        }
+    });
+
     let executor_actor = ExecutorActor::new(paper_executor, channels.order_rx, channels.execution_event_tx.clone());
 
     info!("spawning all actors...");

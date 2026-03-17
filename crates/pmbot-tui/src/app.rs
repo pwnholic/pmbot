@@ -42,7 +42,7 @@ pub struct App {
     pub logs: VecDeque<LogEntry>,
     /// Maximum number of log entries to retain.
     pub log_buffer_size: usize,
-    /// PnL history for sparkline rendering.
+    /// PnL history (retained for API compatibility).
     pub pnl_history: VecDeque<Decimal>,
     /// Whether the TUI is still running.
     pub running: bool,

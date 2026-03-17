@@ -45,10 +45,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     } else {
         (rust_decimal::Decimal::ZERO, rust_decimal::Decimal::ZERO)
     };
-    f.render_widget(
-        PnlWidget::new(&app.pnl_history, balance, daily_pnl),
-        layout.risk_panel,
-    );
+    f.render_widget(PnlWidget::new(balance, daily_pnl), layout.risk_panel);
 
     // Orderbook (middle-left)
     let mut orderbook = OrderbookWidget::new(bids, asks);
