@@ -209,6 +209,17 @@ pub struct Position {
 }
 
 // ---------------------------------------------------------------------------
+// Risk Actor → Strategy Actor (position updates)
+// ---------------------------------------------------------------------------
+
+/// Sent by the risk actor whenever position state changes, so the strategy
+/// actor can keep its `WorldStateBuilder` in sync.
+#[derive(Debug, Clone)]
+pub struct PositionSnapshot {
+    pub positions: Vec<Position>,
+}
+
+// ---------------------------------------------------------------------------
 // Strategy metrics for TUI
 // ---------------------------------------------------------------------------
 

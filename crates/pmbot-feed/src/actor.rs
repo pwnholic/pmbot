@@ -111,7 +111,10 @@ impl FeedActor {
                 }
             }
             RawFeedMessage::Latency(dur) => {
-                let _ = self.events_tx.send(FeedEvent::LatencyUpdate { latency: dur });
+                tracing::info!(latency_ms = dur.as_millis(), "FeedActor received latency from WS");
+                if let Err(e) = self.events_tx.send(FeedEvent::LatencyUpdate { latency: dur }) {
+                    tracing::warn!("Failed to broadcast FeedEvent::LatencyUpdate: {}", e);
+                }
             }
         }
     }

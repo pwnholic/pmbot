@@ -38,7 +38,11 @@ impl CircuitBreaker {
         // Only enter signals need full checks
         let (edge, size, price, market_id) = match signal {
             Signal::Enter {
-                edge, size, price, market_id, ..
+                edge,
+                size,
+                price,
+                market_id,
+                ..
             } => (*edge, *size, *price, market_id),
             _ => return Ok(()),
         };
@@ -83,7 +87,9 @@ impl CircuitBreaker {
                         return Err(RejectReason::NoTradeZone { seconds_remaining });
                     }
                 } else {
-                    return Err(RejectReason::NoTradeZone { seconds_remaining: 0 });
+                    return Err(RejectReason::NoTradeZone {
+                        seconds_remaining: 0,
+                    });
                 }
             }
         }
@@ -168,6 +174,7 @@ mod tests {
             balance,
             daily_pnl: Decimal::ZERO,
             external_prices: HashMap::new(),
+            network_latency: HashMap::new(),
             timestamp: Utc::now(),
         }
     }
@@ -267,7 +274,7 @@ mod tests {
         let signal = Signal::Exit {
             id: SignalId::new(),
             strategy: "test",
-            position_id: pmbot_core::types::PositionId::new(),
+            signal_id: SignalId::new(),
             reason: pmbot_core::types::ExitReason::StrategyExit,
         };
         let world = test_world(dec!(0));

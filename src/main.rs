@@ -10,7 +10,7 @@ use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 use pmbot_core::BotConfig;
-use pmbot_core::messages::{ExecutableOrder, ExecutionEvent, FeedEvent, MarketEvent, Signal};
+use pmbot_core::messages::{ExecutableOrder, ExecutionEvent, FeedEvent, MarketEvent, PositionSnapshot, Signal};
 use pmbot_core::types::{MarketId, Symbol};
 use pmbot_executor::{ExecutorActor, LiveExecutor, PaperExecutor};
 use pmbot_feed::{FeedActor, RawFeedMessage, VolMethod, run_binance_ws};
@@ -193,6 +193,8 @@ struct ActorChannels {
     raw_trade_tx: mpsc::Sender<RawFeedMessage>,
     raw_trade_rx: mpsc::Receiver<RawFeedMessage>,
     shutdown_tx: broadcast::Sender<()>,
+    position_tx: tokio::sync::watch::Sender<PositionSnapshot>,
+    position_rx: tokio::sync::watch::Receiver<PositionSnapshot>,
     tui_tx: Option<tokio::sync::watch::Sender<Option<(pmbot_core::messages::WorldState, Vec<pmbot_core::messages::StrategyMetrics>)>>>,
     tui_rx: Option<tokio::sync::watch::Receiver<Option<(pmbot_core::messages::WorldState, Vec<pmbot_core::messages::StrategyMetrics>)>>>,
 }
@@ -206,6 +208,7 @@ fn create_actor_channels(use_tui: bool) -> ActorChannels {
     let (book_tx, book_rx) = mpsc::channel(256);
     let (raw_trade_tx, raw_trade_rx) = mpsc::channel(256);
     let (shutdown_tx, _) = broadcast::channel(1);
+    let (position_tx, position_rx) = tokio::sync::watch::channel(PositionSnapshot { positions: vec![] });
     
     let (tui_tx, tui_rx) = if use_tui {
         let (tx, rx) = tokio::sync::watch::channel(None);
@@ -227,6 +230,8 @@ fn create_actor_channels(use_tui: bool) -> ActorChannels {
         raw_trade_tx,
         raw_trade_rx,
         shutdown_tx,
+        position_tx,
+        position_rx,
         tui_tx,
         tui_rx,
     }
@@ -249,6 +254,8 @@ fn build_common_actors(
     signal_rx: mpsc::Receiver<Signal>,
     order_tx: mpsc::Sender<ExecutableOrder>,
     raw_trade_rx: mpsc::Receiver<RawFeedMessage>,
+    position_tx: tokio::sync::watch::Sender<PositionSnapshot>,
+    position_rx: tokio::sync::watch::Receiver<PositionSnapshot>,
     tui_tx: Option<tokio::sync::watch::Sender<Option<(pmbot_core::messages::WorldState, Vec<pmbot_core::messages::StrategyMetrics>)>>>,
     registry: StrategyRegistry,
 ) -> CommonActors {
@@ -282,6 +289,7 @@ fn build_common_actors(
         market_event_tx.subscribe(),
         feed_event_tx.subscribe(),
         execution_event_tx.subscribe(),
+        position_rx,
         signal_tx,
         tui_tx,
         100,
@@ -292,6 +300,7 @@ fn build_common_actors(
         signal_rx,
         order_tx,
         execution_event_tx.subscribe(),
+        position_tx,
     );
 
     CommonActors {
@@ -337,6 +346,8 @@ async fn run_paper(config: BotConfig, config_path: PathBuf) -> Result<()> {
         channels.signal_rx,
         channels.order_tx.clone(),
         channels.raw_trade_rx,
+        channels.position_tx,
+        channels.position_rx,
         channels.tui_tx.take(),
         registry,
     );
@@ -516,6 +527,8 @@ async fn run_live(config: BotConfig, config_path: PathBuf) -> Result<()> {
         channels.signal_rx,
         channels.order_tx.clone(),
         channels.raw_trade_rx,
+        channels.position_tx,
+        channels.position_rx,
         channels.tui_tx.take(),
         registry,
     );

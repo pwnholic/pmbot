@@ -10,7 +10,7 @@ use rust_decimal::Decimal;
 use tokio::sync::{broadcast, mpsc};
 use tracing::{debug, info, warn};
 
-use pmbot_core::messages::{ExecutionEvent, FeedEvent, MarketEvent, Signal};
+use pmbot_core::messages::{ExecutionEvent, FeedEvent, MarketEvent, PositionSnapshot, Signal};
 
 use crate::context::WorldStateBuilder;
 use crate::registry::StrategyRegistry;
@@ -22,6 +22,7 @@ pub struct StrategyActor {
     market_rx: broadcast::Receiver<MarketEvent>,
     feed_rx: broadcast::Receiver<FeedEvent>,
     execution_rx: broadcast::Receiver<ExecutionEvent>,
+    position_rx: tokio::sync::watch::Receiver<PositionSnapshot>,
     signal_tx: mpsc::Sender<Signal>,
     tui_tx: Option<tokio::sync::watch::Sender<Option<(pmbot_core::messages::WorldState, Vec<pmbot_core::messages::StrategyMetrics>)>>>,
     tick_interval_ms: u64,
@@ -35,6 +36,7 @@ impl StrategyActor {
         market_rx: broadcast::Receiver<MarketEvent>,
         feed_rx: broadcast::Receiver<FeedEvent>,
         execution_rx: broadcast::Receiver<ExecutionEvent>,
+        position_rx: tokio::sync::watch::Receiver<PositionSnapshot>,
         signal_tx: mpsc::Sender<Signal>,
         tui_tx: Option<tokio::sync::watch::Sender<Option<(pmbot_core::messages::WorldState, Vec<pmbot_core::messages::StrategyMetrics>)>>>,
         tick_interval_ms: u64,
@@ -45,6 +47,7 @@ impl StrategyActor {
             market_rx,
             feed_rx,
             execution_rx,
+            position_rx,
             signal_tx,
             tui_tx,
             tick_interval_ms,
@@ -119,6 +122,23 @@ impl StrategyActor {
                         Err(broadcast::error::RecvError::Closed) => {
                             info!("feed event channel closed");
                             break;
+                        }
+                    }
+                }
+                result = self.position_rx.changed() => {
+                    match result {
+                        Ok(()) => {
+                            let snapshot = self.position_rx.borrow_and_update().clone();
+                            self.world_builder.set_positions(snapshot.positions);
+                            // Push updated world to TUI immediately
+                            if let Some(tx) = &self.tui_tx {
+                                let world = self.world_builder.snapshot();
+                                let metrics: Vec<_> = self.registry.iter_mut().map(|s| s.metrics()).collect();
+                                let _ = tx.send(Some((world, metrics)));
+                            }
+                        }
+                        Err(_) => {
+                            info!("position channel closed");
                         }
                     }
                 }
@@ -296,6 +316,7 @@ mod tests {
         let (feed_tx, feed_rx) = broadcast::channel(16);
         let (exec_tx, exec_rx) = broadcast::channel(16);
         let (signal_tx, mut signal_rx) = mpsc::channel(16);
+        let (_pos_tx, pos_rx) = tokio::sync::watch::channel(PositionSnapshot { positions: vec![] });
 
         let mut registry = StrategyRegistry::new();
         registry.register(Box::new(AlwaysEnterStrategy::new()));
@@ -306,6 +327,7 @@ mod tests {
             market_rx,
             feed_rx,
             exec_rx,
+            pos_rx,
             signal_tx,
             None,
             50, // 50ms tick
@@ -354,6 +376,7 @@ mod tests {
         let (_feed_tx, feed_rx) = broadcast::channel(16);
         let (_exec_tx, exec_rx) = broadcast::channel(16);
         let (signal_tx, mut signal_rx) = mpsc::channel(16);
+        let (_pos_tx, pos_rx) = tokio::sync::watch::channel(PositionSnapshot { positions: vec![] });
 
         let mut registry = StrategyRegistry::new();
         registry.register(Box::new(AlwaysEnterStrategy::new()));
@@ -364,6 +387,7 @@ mod tests {
             market_rx,
             feed_rx,
             exec_rx,
+            pos_rx,
             signal_tx,
             None,
             50,

@@ -7,7 +7,7 @@ use tokio::sync::{broadcast, mpsc};
 use tracing::{info, warn};
 
 use pmbot_core::config::RiskConfig;
-use pmbot_core::messages::{ExecutableOrder, ExecutionEvent, Signal, WorldState};
+use pmbot_core::messages::{ExecutableOrder, ExecutionEvent, Position, PositionSnapshot, Signal, WorldState};
 use pmbot_core::types::*;
 
 use crate::kelly::fractional_kelly;
@@ -35,6 +35,7 @@ pub struct RiskActor {
     signal_rx: mpsc::Receiver<Signal>,
     order_tx: mpsc::Sender<ExecutableOrder>,
     execution_rx: broadcast::Receiver<ExecutionEvent>,
+    position_tx: tokio::sync::watch::Sender<PositionSnapshot>,
 }
 
 impl RiskActor {
@@ -44,6 +45,7 @@ impl RiskActor {
         signal_rx: mpsc::Receiver<Signal>,
         order_tx: mpsc::Sender<ExecutableOrder>,
         execution_rx: broadcast::Receiver<ExecutionEvent>,
+        position_tx: tokio::sync::watch::Sender<PositionSnapshot>,
     ) -> Self {
         let breaker = CircuitBreaker::new(config.clone());
         let portfolio = PortfolioRisk {
@@ -65,6 +67,7 @@ impl RiskActor {
             signal_rx,
             order_tx,
             execution_rx,
+            position_tx,
         }
     }
 
@@ -155,6 +158,7 @@ impl RiskActor {
                 self.positions.insert(pos.id, pos);
                 self.breaker
                     .update_position_count(self.open_position_count());
+                self.broadcast_positions();
 
                 // 7. Emit order
                 let order = if price.is_some() {
@@ -282,17 +286,22 @@ impl RiskActor {
                     }
                     self.breaker
                         .update_position_count(self.open_position_count());
+                    self.broadcast_positions();
                     info!(?signal_id, %price, %size, "position opened on fill");
                 }
             }
 
             ExecutionEvent::OrderCancelled { order_id } => {
                 // Remove any pending position with this order ID
+                let before = self.positions.len();
                 self.positions.retain(|_, p| {
                     !matches!(&p.state, crate::position::PositionState::Pending { order_id: oid } if oid == order_id)
                 });
                 self.breaker
                     .update_position_count(self.open_position_count());
+                if self.positions.len() != before {
+                    self.broadcast_positions();
+                }
             }
 
             ExecutionEvent::OrderRejected {
@@ -302,9 +311,13 @@ impl RiskActor {
             } => {
                 warn!(?signal_id, %reason, "order rejected by executor");
                 // Remove pending position for this signal
+                let before = self.positions.len();
                 self.positions.retain(|_, p| p.signal_id != *signal_id);
                 self.breaker
                     .update_position_count(self.open_position_count());
+                if self.positions.len() != before {
+                    self.broadcast_positions();
+                }
             }
 
             _ => {}
@@ -385,6 +398,58 @@ impl RiskActor {
     fn open_position_count(&self) -> usize {
         self.positions.values().filter(|p| p.is_open()).count()
     }
+
+    /// Broadcast a snapshot of all non-closed positions to the strategy actor.
+    fn broadcast_positions(&self) {
+        let positions: Vec<Position> = self
+            .positions
+            .values()
+            .filter_map(|tp| match &tp.state {
+                crate::position::PositionState::Open {
+                    entry_price,
+                    size,
+                    side,
+                    opened_at,
+                    tp_price,
+                    sl_price,
+                } => Some(Position {
+                    id: tp.id,
+                    market_id: tp.market_id.clone(),
+                    token_id: tp.token_id.clone(),
+                    strategy: tp.strategy,
+                    side: *side,
+                    entry_price: *entry_price,
+                    size: *size,
+                    tp_price: *tp_price,
+                    sl_price: *sl_price,
+                    opened_at: *opened_at,
+                    unrealized_pnl: tp.unrealized_pnl(
+                        self.world
+                            .markets
+                            .get(&tp.market_id)
+                            .and_then(|m| m.mid_price)
+                            .unwrap_or(*entry_price),
+                    ),
+                }),
+                crate::position::PositionState::Pending { .. } => Some(Position {
+                    id: tp.id,
+                    market_id: tp.market_id.clone(),
+                    token_id: tp.token_id.clone(),
+                    strategy: tp.strategy,
+                    side: Side::Buy, // default; actual side unknown until filled
+                    entry_price: Decimal::ZERO,
+                    size: Decimal::ZERO,
+                    tp_price: Decimal::ZERO,
+                    sl_price: Decimal::ZERO,
+                    opened_at: chrono::Utc::now(),
+                    unrealized_pnl: Decimal::ZERO,
+                }),
+                _ => None, // Skip Closing / Closed
+            })
+            .collect();
+
+        let _ = self.position_tx.send(PositionSnapshot { positions });
+    }
 }
 
 /// Compute take-profit and stop-loss prices.
@@ -458,7 +523,8 @@ mod tests {
         let (signal_tx, signal_rx) = mpsc::channel(16);
         let (order_tx, order_rx) = mpsc::channel(16);
         let (exec_tx, exec_rx) = broadcast::channel(16);
-        let actor = RiskActor::new(&test_config(), signal_rx, order_tx, exec_rx);
+        let (position_tx, _position_rx) = tokio::sync::watch::channel(PositionSnapshot { positions: vec![] });
+        let actor = RiskActor::new(&test_config(), signal_rx, order_tx, exec_rx, position_tx);
         (actor, signal_tx, order_rx, exec_tx)
     }
 
@@ -699,7 +765,7 @@ mod tests {
         let signal = Signal::Exit {
             id: SignalId::new(),
             strategy: "test",
-            position_id: PositionId::new(), // doesn't exist
+            signal_id: SignalId::new(), // doesn't exist
             reason: ExitReason::StrategyExit,
         };
         let order = actor.process_signal(signal);
@@ -717,6 +783,7 @@ mod tests {
             balance: dec!(500),
             daily_pnl: dec!(-10),
             external_prices: HashMap::new(),
+            network_latency: HashMap::new(),
             timestamp: chrono::Utc::now(),
         };
         actor.update_world(new_world);
@@ -728,7 +795,8 @@ mod tests {
         let (signal_tx, signal_rx) = mpsc::channel(16);
         let (order_tx, mut order_rx) = mpsc::channel(16);
         let (exec_tx, exec_rx) = broadcast::channel(16);
-        let actor = RiskActor::new(&test_config(), signal_rx, order_tx, exec_rx);
+        let (position_tx, _position_rx) = tokio::sync::watch::channel(PositionSnapshot { positions: vec![] });
+        let actor = RiskActor::new(&test_config(), signal_rx, order_tx, exec_rx, position_tx);
 
         // Spawn actor
         let handle = tokio::spawn(actor.run());
