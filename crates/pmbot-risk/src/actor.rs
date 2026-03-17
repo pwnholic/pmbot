@@ -36,6 +36,7 @@ pub struct RiskActor {
     order_tx: mpsc::Sender<ExecutableOrder>,
     execution_rx: broadcast::Receiver<ExecutionEvent>,
     position_tx: tokio::sync::watch::Sender<PositionSnapshot>,
+    world_rx: tokio::sync::watch::Receiver<WorldState>,
 }
 
 impl RiskActor {
@@ -46,6 +47,7 @@ impl RiskActor {
         order_tx: mpsc::Sender<ExecutableOrder>,
         execution_rx: broadcast::Receiver<ExecutionEvent>,
         position_tx: tokio::sync::watch::Sender<PositionSnapshot>,
+        world_rx: tokio::sync::watch::Receiver<WorldState>,
     ) -> Self {
         let breaker = CircuitBreaker::new(config.clone());
         let portfolio = PortfolioRisk {
@@ -68,6 +70,7 @@ impl RiskActor {
             order_tx,
             execution_rx,
             position_tx,
+            world_rx,
         }
     }
 
@@ -391,16 +394,28 @@ impl RiskActor {
                         }
                     }
                 }
+                result = self.world_rx.changed() => {
+                    match result {
+                        Ok(()) => {
+                            let world = self.world_rx.borrow_and_update().clone();
+                            self.world = world;
+                            // Re-broadcast positions with updated market prices for live PnL
+                            if !self.positions.is_empty() {
+                                self.broadcast_positions();
+                            }
+                        }
+                        Err(_) => {
+                            info!("world channel closed");
+                            break;
+                        }
+                    }
+                }
                 event = self.execution_rx.recv() => {
                     match event {
                         Ok(ev) => {
                             self.handle_execution_event(&ev);
-                            // Simple update for world state (simulating a balance/PNL update logic based on fills)
                             if let pmbot_core::messages::ExecutionEvent::OrderFilled { .. } = ev {
-                                // Real implementation would track it via an independent builder,
-                                // but for now we manually apply to the simulated world state
-                                // to bypass H8 InsufficientBalance issue.
-                                self.world.balance = self.bankroll; // Or dynamically track it
+                                self.world.balance = self.bankroll;
                             }
                         }
                         Err(broadcast::error::RecvError::Closed) => {
@@ -556,7 +571,8 @@ mod tests {
         let (order_tx, order_rx) = mpsc::channel(16);
         let (exec_tx, exec_rx) = broadcast::channel(16);
         let (position_tx, _position_rx) = tokio::sync::watch::channel(PositionSnapshot { positions: vec![], daily_pnl: Decimal::ZERO });
-        let actor = RiskActor::new(&test_config(), signal_rx, order_tx, exec_rx, position_tx);
+        let (_world_tx, world_rx) = tokio::sync::watch::channel(WorldState::default());
+        let actor = RiskActor::new(&test_config(), signal_rx, order_tx, exec_rx, position_tx, world_rx);
         (actor, signal_tx, order_rx, exec_tx)
     }
 
@@ -828,7 +844,8 @@ mod tests {
         let (order_tx, mut order_rx) = mpsc::channel(16);
         let (exec_tx, exec_rx) = broadcast::channel(16);
         let (position_tx, _position_rx) = tokio::sync::watch::channel(PositionSnapshot { positions: vec![], daily_pnl: Decimal::ZERO });
-        let actor = RiskActor::new(&test_config(), signal_rx, order_tx, exec_rx, position_tx);
+        let (_world_tx, world_rx) = tokio::sync::watch::channel(WorldState::default());
+        let actor = RiskActor::new(&test_config(), signal_rx, order_tx, exec_rx, position_tx, world_rx);
 
         // Spawn actor
         let handle = tokio::spawn(actor.run());

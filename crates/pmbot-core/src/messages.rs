@@ -169,7 +169,7 @@ pub enum ExecutionEvent {
 
 /// Immutable snapshot of the entire system state at a point in time.
 /// Built every tick by the strategy actor, shared via `Arc`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct WorldState {
     pub active_market_id: Option<MarketId>,
     pub markets: std::collections::HashMap<MarketId, MarketSnapshot>,

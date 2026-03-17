@@ -24,6 +24,7 @@ pub struct StrategyActor {
     execution_rx: broadcast::Receiver<ExecutionEvent>,
     position_rx: tokio::sync::watch::Receiver<PositionSnapshot>,
     signal_tx: mpsc::Sender<Signal>,
+    world_tx: tokio::sync::watch::Sender<pmbot_core::messages::WorldState>,
     tui_tx: Option<tokio::sync::watch::Sender<Option<(pmbot_core::messages::WorldState, Vec<pmbot_core::messages::StrategyMetrics>)>>>,
     tick_interval_ms: u64,
 }
@@ -38,6 +39,7 @@ impl StrategyActor {
         execution_rx: broadcast::Receiver<ExecutionEvent>,
         position_rx: tokio::sync::watch::Receiver<PositionSnapshot>,
         signal_tx: mpsc::Sender<Signal>,
+        world_tx: tokio::sync::watch::Sender<pmbot_core::messages::WorldState>,
         tui_tx: Option<tokio::sync::watch::Sender<Option<(pmbot_core::messages::WorldState, Vec<pmbot_core::messages::StrategyMetrics>)>>>,
         tick_interval_ms: u64,
     ) -> Self {
@@ -49,6 +51,7 @@ impl StrategyActor {
             execution_rx,
             position_rx,
             signal_tx,
+            world_tx,
             tui_tx,
             tick_interval_ms,
         }
@@ -221,6 +224,9 @@ impl StrategyActor {
                 }
             }
         }
+
+        // Send world state to RiskActor for unrealized PnL computation
+        let _ = self.world_tx.send(world.clone());
         
         if let Some(tx) = &self.tui_tx {
             let metrics: Vec<_> = self.registry.iter_mut().map(|s| s.metrics()).collect();
@@ -318,6 +324,7 @@ mod tests {
         let (exec_tx, exec_rx) = broadcast::channel(16);
         let (signal_tx, mut signal_rx) = mpsc::channel(16);
         let (_pos_tx, pos_rx) = tokio::sync::watch::channel(PositionSnapshot { positions: vec![], daily_pnl: Decimal::ZERO });
+        let (world_tx, _world_rx) = tokio::sync::watch::channel(pmbot_core::messages::WorldState::default());
 
         let mut registry = StrategyRegistry::new();
         registry.register(Box::new(AlwaysEnterStrategy::new()));
@@ -330,6 +337,7 @@ mod tests {
             exec_rx,
             pos_rx,
             signal_tx,
+            world_tx,
             None,
             50, // 50ms tick
         );
@@ -378,6 +386,7 @@ mod tests {
         let (_exec_tx, exec_rx) = broadcast::channel(16);
         let (signal_tx, mut signal_rx) = mpsc::channel(16);
         let (_pos_tx, pos_rx) = tokio::sync::watch::channel(PositionSnapshot { positions: vec![], daily_pnl: Decimal::ZERO });
+        let (world_tx, _world_rx) = tokio::sync::watch::channel(pmbot_core::messages::WorldState::default());
 
         let mut registry = StrategyRegistry::new();
         registry.register(Box::new(AlwaysEnterStrategy::new()));
@@ -390,6 +399,7 @@ mod tests {
             exec_rx,
             pos_rx,
             signal_tx,
+            world_tx,
             None,
             50,
         );

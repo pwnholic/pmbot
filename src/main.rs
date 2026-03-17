@@ -195,6 +195,8 @@ struct ActorChannels {
     shutdown_tx: broadcast::Sender<()>,
     position_tx: tokio::sync::watch::Sender<PositionSnapshot>,
     position_rx: tokio::sync::watch::Receiver<PositionSnapshot>,
+    world_tx: tokio::sync::watch::Sender<pmbot_core::messages::WorldState>,
+    world_rx: tokio::sync::watch::Receiver<pmbot_core::messages::WorldState>,
     tui_tx: Option<tokio::sync::watch::Sender<Option<(pmbot_core::messages::WorldState, Vec<pmbot_core::messages::StrategyMetrics>)>>>,
     tui_rx: Option<tokio::sync::watch::Receiver<Option<(pmbot_core::messages::WorldState, Vec<pmbot_core::messages::StrategyMetrics>)>>>,
 }
@@ -209,7 +211,8 @@ fn create_actor_channels(use_tui: bool) -> ActorChannels {
     let (raw_trade_tx, raw_trade_rx) = mpsc::channel(256);
     let (shutdown_tx, _) = broadcast::channel(1);
     let (position_tx, position_rx) = tokio::sync::watch::channel(PositionSnapshot { positions: vec![], daily_pnl: Decimal::ZERO });
-    
+    let (world_tx, world_rx) = tokio::sync::watch::channel(pmbot_core::messages::WorldState::default());
+
     let (tui_tx, tui_rx) = if use_tui {
         let (tx, rx) = tokio::sync::watch::channel(None);
         (Some(tx), Some(rx))
@@ -232,6 +235,8 @@ fn create_actor_channels(use_tui: bool) -> ActorChannels {
         shutdown_tx,
         position_tx,
         position_rx,
+        world_tx,
+        world_rx,
         tui_tx,
         tui_rx,
     }
@@ -256,6 +261,8 @@ fn build_common_actors(
     raw_trade_rx: mpsc::Receiver<RawFeedMessage>,
     position_tx: tokio::sync::watch::Sender<PositionSnapshot>,
     position_rx: tokio::sync::watch::Receiver<PositionSnapshot>,
+    world_tx: tokio::sync::watch::Sender<pmbot_core::messages::WorldState>,
+    world_rx: tokio::sync::watch::Receiver<pmbot_core::messages::WorldState>,
     tui_tx: Option<tokio::sync::watch::Sender<Option<(pmbot_core::messages::WorldState, Vec<pmbot_core::messages::StrategyMetrics>)>>>,
     registry: StrategyRegistry,
 ) -> CommonActors {
@@ -291,6 +298,7 @@ fn build_common_actors(
         execution_event_tx.subscribe(),
         position_rx,
         signal_tx,
+        world_tx,
         tui_tx,
         100,
     );
@@ -301,6 +309,7 @@ fn build_common_actors(
         order_tx,
         execution_event_tx.subscribe(),
         position_tx,
+        world_rx,
     );
 
     CommonActors {
@@ -348,6 +357,8 @@ async fn run_paper(config: BotConfig, config_path: PathBuf) -> Result<()> {
         channels.raw_trade_rx,
         channels.position_tx,
         channels.position_rx,
+        channels.world_tx,
+        channels.world_rx,
         channels.tui_tx.take(),
         registry,
     );
@@ -529,6 +540,8 @@ async fn run_live(config: BotConfig, config_path: PathBuf) -> Result<()> {
         channels.raw_trade_rx,
         channels.position_tx,
         channels.position_rx,
+        channels.world_tx,
+        channels.world_rx,
         channels.tui_tx.take(),
         registry,
     );
