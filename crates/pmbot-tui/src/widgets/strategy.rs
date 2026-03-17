@@ -25,7 +25,8 @@ impl Widget for StrategyWidget<'_> {
             .title(" Strategies ")
             .title_style(theme::title_style())
             .borders(Borders::ALL)
-            .border_style(theme::border_style());
+            .border_style(theme::border_style())
+            .style(Style::default().bg(theme::BG_DARK));
         let inner = block.inner(area);
         block.render(area, buf);
 
@@ -69,6 +70,29 @@ impl Widget for StrategyWidget<'_> {
                 Span::styled(
                     format!(" {}", m.signals_generated),
                     Style::default().fg(theme::ORANGE),
+                ),
+            ]));
+
+            // Win rate and PnL line
+            let win_rate = if m.trades > 0 {
+                format!("{:.1}%", (m.wins as f64 / m.trades as f64) * 100.0)
+            } else {
+                "---".into()
+            };
+            let pnl_color = if m.total_pnl >= rust_decimal::Decimal::ZERO {
+                theme::GREEN
+            } else {
+                theme::RED
+            };
+            lines.push(Line::from(vec![
+                Span::styled("  trades:", theme::label()),
+                Span::styled(format!(" {}", m.trades), theme::value()),
+                Span::styled("  win:", theme::label()),
+                Span::styled(format!(" {}", win_rate), theme::value()),
+                Span::styled("  pnl:", theme::label()),
+                Span::styled(
+                    format!(" ${:.2}", m.total_pnl),
+                    Style::default().fg(pnl_color),
                 ),
             ]));
 

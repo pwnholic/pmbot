@@ -97,10 +97,11 @@ impl MarketActor {
             return Err(anyhow::anyhow!("no viable markets available"));
         }
 
-        // Pick the market with the highest liquidity
+        // Pick the market with the nearest expiry (for time-bounded strategies like 5min markets)
+        // This ensures we trade the market that will expire soonest, maximizing edge
         let best = markets
             .into_iter()
-            .max_by_key(|m| m.liquidity)
+            .min_by_key(|m| m.end_date.unwrap_or(chrono::DateTime::UNIX_EPOCH))
             .unwrap();
 
         info!(
@@ -160,7 +161,12 @@ impl MarketActor {
                             Ok(raw_markets) => {
                                 // Filter to viable (non-expired, with end_date) markets
                                 let mut viable = self.viable_markets(raw_markets);
-                                viable.sort_by(|a, b| b.liquidity.cmp(&a.liquidity));
+                                // Sort by time-to-expiry ascending (nearest expiry first)
+                                viable.sort_by(|a, b| {
+                                    let a_tte = a.end_date.map(|d| d.timestamp()).unwrap_or(i64::MAX);
+                                    let b_tte = b.end_date.map(|d| d.timestamp()).unwrap_or(i64::MAX);
+                                    a_tte.cmp(&b_tte)
+                                });
 
                                 if let Some(new_market) = viable.into_iter().next() {
                                     let old_market = self.rotator.current_market().cloned();

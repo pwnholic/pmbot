@@ -53,7 +53,8 @@ impl Widget for OrderbookWidget<'_> {
             .title(" Orderbook ")
             .title_style(theme::title_style())
             .borders(Borders::ALL)
-            .border_style(theme::border_style());
+            .border_style(theme::border_style())
+            .style(Style::default().bg(theme::BG_DARK));
         let inner = block.inner(area);
         block.render(area, buf);
 
@@ -96,7 +97,7 @@ impl Widget for OrderbookWidget<'_> {
 
         // Mid separator
         let mid_str = match self.mid_price {
-            Some(p) => format!("mid {}", p.round_dp(4)),
+            Some(p) => format!(" [mid {}] ", p.round_dp(4)),
             None => "mid ---".to_string(),
         };
         let pad = (inner.width as usize).saturating_sub(mid_str.len() + 6) / 2;

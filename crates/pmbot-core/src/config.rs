@@ -1,7 +1,7 @@
 use std::path::Path;
 
-use figment::providers::{Env, Format, Toml};
 use figment::Figment;
+use figment::providers::{Env, Format, Toml};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 

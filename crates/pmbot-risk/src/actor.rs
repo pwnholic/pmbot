@@ -417,11 +417,13 @@ impl RiskActor {
                     match result {
                         Ok(()) => {
                             let world = self.world_rx.borrow_and_update().clone();
-                            self.world = world;
+                            self.world = world.clone();
                             // Re-broadcast positions with updated market prices for live PnL
                             if !self.positions.is_empty() {
                                 self.broadcast_positions();
                             }
+                            // Check TP/SL for all open positions
+                            self.check_tp_sl(&world);
                         }
                         Err(_) => {
                             info!("world channel closed");
@@ -554,6 +556,62 @@ impl RiskActor {
         self.breaker.update_position_count(0);
         self.broadcast_positions();
         info!(count, "cleared all positions after market rotation");
+    }
+
+    /// Check all open positions for TP/SL triggers and emit Exit signals if triggered.
+    fn check_tp_sl(&mut self, world: &WorldState) {
+        let mut signals_to_emit = Vec::new();
+
+        for (pos_id, tp) in self.positions.iter() {
+            if let crate::position::PositionState::Open { .. } = &tp.state {
+                // Get current mid price for this market
+                let mid_price = match world.markets.get(&tp.market_id).and_then(|m| m.mid_price) {
+                    Some(p) => p,
+                    None => continue, // No price data
+                };
+
+                let should_exit = if tp.should_take_profit(mid_price) {
+                    info!(
+                        strategy = tp.strategy,
+                        ?pos_id,
+                        %mid_price,
+                        "TP triggered"
+                    );
+                    true
+                } else if tp.should_stop_loss(mid_price) {
+                    info!(
+                        strategy = tp.strategy,
+                        ?pos_id,
+                        %mid_price,
+                        "SL triggered"
+                    );
+                    true
+                } else {
+                    false
+                };
+
+                if should_exit {
+                    signals_to_emit.push(Signal::Exit {
+                        id: SignalId::new(),
+                        strategy: tp.strategy,
+                        signal_id: tp.signal_id,
+                        reason: if tp.should_take_profit(mid_price) {
+                            pmbot_core::types::ExitReason::TakeProfit
+                        } else {
+                            pmbot_core::types::ExitReason::StopLoss
+                        },
+                    });
+                }
+            }
+        }
+
+        // Emit exit signals
+        for signal in signals_to_emit {
+            if let Some(order) = self.process_signal(signal) {
+                // Try to send, but don't block if channel is full
+                let _ = self.order_tx.try_send(order);
+            }
+        }
     }
 }
 

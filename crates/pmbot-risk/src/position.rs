@@ -131,7 +131,7 @@ impl TrackedPosition {
             _ => {
                 return Err(PositionError::InvalidState(
                     "can only start closing an Open position",
-                ))
+                ));
             }
         };
         self.state = PositionState::Closing {
@@ -163,7 +163,7 @@ impl TrackedPosition {
             _ => {
                 return Err(PositionError::InvalidState(
                     "can only close a Closing position",
-                ))
+                ));
             }
         };
         let pnl = compute_pnl(entry_price, exit_price, size, side);
@@ -260,7 +260,7 @@ mod tests {
         let mut pos = make_pending();
         assert!(matches!(pos.state, PositionState::Pending { .. }));
 
-        pos.open(dec!(0.50), dec!(100), Side::Buy, dec!(0.70), dec!(0.35));
+        let _ = pos.open(dec!(0.50), dec!(100), Side::Buy, dec!(0.70), dec!(0.35));
         match &pos.state {
             PositionState::Open {
                 entry_price,
@@ -283,9 +283,8 @@ mod tests {
     #[test]
     fn test_open_to_closing() {
         let mut pos = make_pending();
-        pos.open(dec!(0.50), dec!(100), Side::Buy, dec!(0.70), dec!(0.35));
-
-        pos.start_closing(OrderId("exit-1".into()));
+        let _ = pos.open(dec!(0.50), dec!(100), Side::Buy, dec!(0.70), dec!(0.35));
+        let _ = pos.start_closing(OrderId("exit-1".into()));
         match &pos.state {
             PositionState::Closing { exit_order_id, .. } => {
                 assert_eq!(exit_order_id.0, "exit-1");
@@ -297,8 +296,7 @@ mod tests {
     #[test]
     fn test_closing_to_closed_buy_profit() {
         let mut pos = make_pending();
-        pos.open(dec!(0.50), dec!(100), Side::Buy, dec!(0.70), dec!(0.35));
-
+        let _ = pos.open(dec!(0.50), dec!(100), Side::Buy, dec!(0.70), dec!(0.35));
         pos.start_closing(OrderId("exit-1".into()));
         let pnl = pos.close(dec!(0.70)).unwrap();
 

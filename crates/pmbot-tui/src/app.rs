@@ -189,6 +189,10 @@ mod tests {
             state: "active",
             edge: Some(dec!(0.02)),
             signals_generated: 5,
+            trades: 0,
+            wins: 0,
+            losses: 0,
+            total_pnl: rust_decimal::Decimal::ZERO,
             custom: vec![],
         }];
         app.update_metrics(m1);
@@ -200,6 +204,10 @@ mod tests {
                 state: "paused",
                 edge: None,
                 signals_generated: 10,
+                trades: 0,
+                wins: 0,
+                losses: 0,
+                total_pnl: rust_decimal::Decimal::ZERO,
                 custom: vec![],
             },
             StrategyMetrics {
@@ -207,6 +215,10 @@ mod tests {
                 state: "active",
                 edge: Some(dec!(0.01)),
                 signals_generated: 3,
+                trades: 0,
+                wins: 0,
+                losses: 0,
+                total_pnl: rust_decimal::Decimal::ZERO,
                 custom: vec![],
             },
         ];

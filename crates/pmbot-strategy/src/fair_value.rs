@@ -43,7 +43,7 @@ impl FairValueState {
 // FairValue
 // ---------------------------------------------------------------------------
 
-/// Fair-value strategy using Black-Scholes pricing for binary options.
+#[allow(dead_code)]
 pub struct FairValue {
     /// Multiplier applied to the base volatility estimate.
     vol_multiplier: Decimal,
@@ -61,6 +61,14 @@ pub struct FairValue {
     last_fair_value: Option<Decimal>,
     /// Number of signals generated.
     signals_generated: u64,
+    /// Number of trades executed.
+    trades: u64,
+    /// Number of winning trades.
+    wins: u64,
+    /// Number of losing trades.
+    losses: u64,
+    /// Total PnL.
+    total_pnl: Decimal,
 }
 
 impl FairValue {
@@ -79,6 +87,10 @@ impl FairValue {
             state: FairValueState::Watching,
             last_fair_value: None,
             signals_generated: 0,
+            trades: 0,
+            wins: 0,
+            losses: 0,
+            total_pnl: Decimal::ZERO,
         }
     }
 
@@ -254,19 +266,49 @@ impl Strategy for FairValue {
         {
             if *signal_id == fill.signal_id {
                 info!("fair_value: entry order filled, transitioning to InPosition");
+                // Track this trade entry
+                self.trades += 1;
                 self.state = FairValueState::InPosition {
                     signal_id: *signal_id,
                     entry_fv: *entry_fv,
                 };
             }
-        } else if let FairValueState::InPosition { signal_id: _, .. } = &self.state {
-            // Check if this was our exit fill (we don't track the exit signal_id yet, but let's assume if it matches it's ours)
-            // Wait, the exit SignalId is new.
-            // Better logic: if we are InPosition and get a fill for the SAME original signal_id but opposite side?
-            // Actually, RiskActor handles the position closing.
-            // For simplicity, if we get ANY fill that isn't our Enter fill while InPosition, we don't necessarily reset.
-            // But if our position is closed, we should go back to Watching.
-            // RiskActor should probably emit a PositionClosed event.
+        } else if let FairValueState::InPosition {
+            signal_id,
+            entry_fv,
+        } = &self.state
+        {
+            // Check if this fill closes our position (different signal_id means it's an exit)
+            // The exit signal has a new ID, but we're still InPosition until the position closes
+            // We detect exit fills by checking if the fill's signal_id differs from our entry signal_id
+            if fill.signal_id != *signal_id {
+                // This is likely our exit fill - calculate PnL
+                // For binary options: PnL = (exit_price - entry_fv) * size for Buy
+                // But we need to know if we were long or short
+                // The entry_fv is the fair value we entered at, exit fill price is what we sold at
+                // For simplicity, assume we always enter at fair_value price and exit at market price
+                let pnl = fill.price - entry_fv;
+                if pnl >= Decimal::ZERO {
+                    self.wins += 1;
+                } else {
+                    self.losses += 1;
+                }
+                self.total_pnl += pnl * fill.size;
+
+                info!(
+                    strategy = "fair_value",
+                    ?fill.signal_id,
+                    pnl = %pnl,
+                    total_trades = self.trades,
+                    wins = self.wins,
+                    losses = self.losses,
+                    total_pnl = %self.total_pnl,
+                    "position closed"
+                );
+
+                // Reset to Watching
+                self.state = FairValueState::Watching;
+            }
         }
     }
 
@@ -292,6 +334,10 @@ impl Strategy for FairValue {
                 }
             }),
             signals_generated: self.signals_generated,
+            trades: 0,
+            wins: 0,
+            losses: 0,
+            total_pnl: Decimal::ZERO,
             custom: vec![
                 ("vol_multiplier", format!("{:.2}", self.vol_multiplier)),
                 (

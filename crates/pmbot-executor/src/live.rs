@@ -114,6 +114,28 @@ impl LiveExecutor {
     async fn acquire_read_token(&self) {
         self.rate_limiter.lock().await.reads.acquire(1).await;
     }
+
+    /// Fetch the current USDC balance from Polymarket.
+    ///
+    /// This queries the CLOB API for the account's available USDC balance.
+    pub async fn get_balance(&self) -> Result<Decimal> {
+        self.acquire_read_token().await;
+        
+        let request = polymarket_client_sdk::clob::types::request::BalanceAllowanceRequest::default();
+        
+        let response = self
+            .client
+            .balance_allowance(request)
+            .await
+            .context("failed to fetch balance from CLOB API")?;
+        
+        info!(
+            balance = %response.balance,
+            "fetched live balance from Polymarket"
+        );
+        
+        Ok(response.balance)
+    }
 }
 
 #[async_trait]

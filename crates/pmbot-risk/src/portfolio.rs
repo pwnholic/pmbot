@@ -75,7 +75,7 @@ mod tests {
             },
             signal_id: SignalId::new(),
         };
-        pos.open(dec!(0.50), size, Side::Buy, dec!(0.70), dec!(0.35));
+        let _ = pos.open(dec!(0.50), size, Side::Buy, dec!(0.70), dec!(0.35));
         pos
     }
 
@@ -135,9 +135,10 @@ mod tests {
             max_per_event: 2,
         };
         let positions = vec![make_open_position("m1", dec!(100))];
-        assert!(risk
-            .check_concentration(&positions, &MarketId("m1".into()))
-            .is_ok());
+        assert!(
+            risk.check_concentration(&positions, &MarketId("m1".into()))
+                .is_ok()
+        );
     }
 
     #[test]
@@ -162,8 +163,9 @@ mod tests {
         };
         let positions = vec![make_open_position("m1", dec!(100))];
         // Different market should be fine
-        assert!(risk
-            .check_concentration(&positions, &MarketId("m2".into()))
-            .is_ok());
+        assert!(
+            risk.check_concentration(&positions, &MarketId("m2".into()))
+                .is_ok()
+        );
     }
 }

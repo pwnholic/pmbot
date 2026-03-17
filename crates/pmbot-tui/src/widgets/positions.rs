@@ -103,7 +103,8 @@ impl Widget for PositionsWidget<'_> {
                 .title(format!(" Positions ({}) ", self.positions.len()))
                 .title_style(theme::title_style())
                 .borders(Borders::ALL)
-                .border_style(theme::border_style()),
+                .border_style(theme::border_style())
+                .style(Style::default().bg(theme::BG)),
         );
 
         Widget::render(table, area, buf);

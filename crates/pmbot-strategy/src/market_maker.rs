@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
-use tracing::debug;
+use tracing::{debug, info};
 
 use pmbot_core::messages::{Signal, StrategyMetrics, WorldState};
 use pmbot_core::types::{FillEvent, MarketId, MarketInfo, Side, SignalId};
@@ -35,10 +35,7 @@ enum MakerState {
 // MarketMaker
 // ---------------------------------------------------------------------------
 
-/// Two-sided market making strategy with inventory-based skew.
-///
-/// Quotes around mid-price with a configurable spread. Adjusts
-/// bid/ask skew based on current inventory to reduce directional risk.
+#[allow(dead_code)]
 pub struct MarketMaker {
     /// Base spread in basis points (e.g., 200 = 2%).
     spread_bps: u32,
@@ -50,12 +47,22 @@ pub struct MarketMaker {
     refresh_interval: Duration,
     /// Current net inventory (positive = long, negative = short).
     current_inventory: Decimal,
+    /// Average entry price for inventory tracking.
+    avg_entry_price: Decimal,
     /// Timestamp of last quote.
     last_quote_time: Option<Instant>,
     /// Internal state machine.
     state: MakerState,
     /// Number of signals generated (for metrics).
     signals_generated: u64,
+    /// Number of trades executed.
+    trades: u64,
+    /// Number of winning trades.
+    wins: u64,
+    /// Number of losing trades.
+    losses: u64,
+    /// Total PnL.
+    total_pnl: Decimal,
 }
 
 impl MarketMaker {
@@ -77,9 +84,14 @@ impl MarketMaker {
             quote_size,
             refresh_interval: Duration::from_millis(refresh_interval_ms),
             current_inventory: Decimal::ZERO,
+            avg_entry_price: Decimal::ZERO,
             last_quote_time: None,
             state: MakerState::Quoting,
             signals_generated: 0,
+            trades: 0,
+            wins: 0,
+            losses: 0,
+            total_pnl: Decimal::ZERO,
         }
     }
 
@@ -252,14 +264,92 @@ impl Strategy for MarketMaker {
     }
 
     fn on_fill(&mut self, fill: &FillEvent) {
+        self.trades += 1;
+        
         match fill.side {
-            Side::Buy => self.current_inventory += fill.size,
-            Side::Sell => self.current_inventory -= fill.size,
+            Side::Buy => {
+                // Buy: increase inventory, update avg entry price
+                let new_inventory = self.current_inventory + fill.size;
+                if new_inventory != Decimal::ZERO {
+                    self.avg_entry_price = if self.current_inventory == Decimal::ZERO {
+                        fill.price
+                    } else if self.current_inventory > Decimal::ZERO {
+                        // Already long, buying more at new price
+                        (self.avg_entry_price * self.current_inventory + fill.price * fill.size) / new_inventory
+                    } else {
+                        // Was short, buying to cover (realize PnL)
+                        // PnL = (entry_price - exit_price) * size for short
+                        let pnl = (self.avg_entry_price - fill.price) * fill.size;
+                        self.total_pnl += pnl;
+                        if pnl >= Decimal::ZERO {
+                            self.wins += 1;
+                        } else {
+                            self.losses += 1;
+                        }
+                        info!(
+                            strategy = "market_maker",
+                            side = "cover_short",
+                            pnl = %pnl,
+                            total_trades = self.trades,
+                            wins = self.wins,
+                            losses = self.losses,
+                            total_pnl = %self.total_pnl,
+                            "trade closed"
+                        );
+                        if new_inventory > Decimal::ZERO {
+                            fill.price
+                        } else {
+                            self.avg_entry_price
+                        }
+                    };
+                }
+                self.current_inventory = new_inventory;
+            }
+            Side::Sell => {
+                // Sell: decrease inventory
+                let new_inventory = self.current_inventory - fill.size;
+                if new_inventory != Decimal::ZERO {
+                    self.avg_entry_price = if self.current_inventory == Decimal::ZERO {
+                        // Starting fresh short
+                        fill.price
+                    } else if self.current_inventory < Decimal::ZERO {
+                        // Already short, selling more (avg entry stays same for shorts)
+                        self.avg_entry_price
+                    } else {
+                        // Was long, selling to close (realize PnL)
+                        // PnL = (exit_price - entry_price) * size for long
+                        let pnl = (fill.price - self.avg_entry_price) * fill.size;
+                        self.total_pnl += pnl;
+                        if pnl >= Decimal::ZERO {
+                            self.wins += 1;
+                        } else {
+                            self.losses += 1;
+                        }
+                        info!(
+                            strategy = "market_maker",
+                            side = "close_long",pnl = %pnl,
+                            total_trades = self.trades,
+                            wins = self.wins,
+                            losses = self.losses,
+                            total_pnl = %self.total_pnl,
+                            "trade closed"
+                        );
+                        if new_inventory < Decimal::ZERO {
+                            fill.price
+                        } else {
+                            self.avg_entry_price
+                        }
+                    };
+                }
+                self.current_inventory = new_inventory;
+            }
         }
+        
         debug!(
             side = %fill.side,
             size = %fill.size,
             inventory = %self.current_inventory,
+            avg_entry = %self.avg_entry_price,
             "market_maker: fill, updated inventory"
         );
     }
@@ -267,6 +357,7 @@ impl Strategy for MarketMaker {
     fn on_market_change(&mut self, _old: &MarketId, _new: &MarketInfo) {
         self.state = MakerState::Quoting;
         self.current_inventory = Decimal::ZERO;
+        self.avg_entry_price = Decimal::ZERO;
         self.last_quote_time = None;
         debug!("market_maker: market changed, resetting state");
     }
@@ -277,6 +368,10 @@ impl Strategy for MarketMaker {
             state: self.state_name(),
             edge: Some(self.base_spread() / dec!(2)),
             signals_generated: self.signals_generated,
+            trades: 0,
+            wins: 0,
+            losses: 0,
+            total_pnl: Decimal::ZERO,
             custom: vec![
                 ("spread_bps", self.spread_bps.to_string()),
                 ("inventory", self.current_inventory.to_string()),

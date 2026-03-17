@@ -25,6 +25,8 @@ pub async fn run_tui(
     let mut terminal = Terminal::new(backend)?;
 
     let mut app = App::new(200);
+    let mut prev_positions_count = 0usize;
+    let mut prev_balance = rust_decimal::Decimal::ZERO;
 
     // Initial draw
     terminal.draw(|f| crate::ui::draw(f, &mut app))?;
@@ -43,12 +45,31 @@ pub async fn run_tui(
             Ok(_) = tui_rx.changed() => {
                 let current_state = tui_rx.borrow().clone();
                 if let Some((world, metrics)) = current_state {
-                    // Update PnL occasionally (every tick_count is probably too fast, but we'll adapt)
-                    let pnl = world.daily_pnl;
+                    // Log position changes
+                    let curr_positions = world.positions.len();
+                    if curr_positions != prev_positions_count {
+                        if curr_positions > prev_positions_count {
+                            app.log(crate::LogLevel::Trade, format!("+{} position(s) opened", curr_positions - prev_positions_count));
+                        } else if curr_positions < prev_positions_count {
+                            app.log(crate::LogLevel::Trade, format!("-{} position(s) closed", prev_positions_count - curr_positions));
+                        }
+                        prev_positions_count = curr_positions;
+                    }
+
+                    // Log significant balance changes
+                    let balance_diff = world.balance - prev_balance;
+                    if balance_diff.abs() > rust_decimal::Decimal::new(1, 0) {
+                        if balance_diff > rust_decimal::Decimal::ZERO {
+                            app.log(crate::LogLevel::Info, format!("Balance +${}", balance_diff.round_dp(2)));
+                        } else {
+                            app.log(crate::LogLevel::Warn, format!("Balance -${}", balance_diff.abs().round_dp(2)));
+                        }
+                        prev_balance = world.balance;
+                    }
 
                     app.update_world(world);
                     app.update_metrics(metrics);
-                    app.record_pnl(pnl);
+                    app.record_pnl(app.world.as_ref().map(|w| w.daily_pnl).unwrap_or(rust_decimal::Decimal::ZERO));
                 }
             }
             // Add a timeout fallback in `select!` just to keep polling keys at 10Hz

@@ -231,5 +231,9 @@ pub struct StrategyMetrics {
     pub state: &'static str,
     pub edge: Option<Decimal>,
     pub signals_generated: u64,
+    pub trades: u64,
+    pub wins: u64,
+    pub losses: u64,
+    pub total_pnl: Decimal,
     pub custom: Vec<(&'static str, String)>,
 }

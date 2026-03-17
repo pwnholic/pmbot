@@ -10,7 +10,9 @@ use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 use pmbot_core::BotConfig;
-use pmbot_core::messages::{ExecutableOrder, ExecutionEvent, FeedEvent, MarketEvent, PositionSnapshot, Signal};
+use pmbot_core::messages::{
+    ExecutableOrder, ExecutionEvent, FeedEvent, MarketEvent, PositionSnapshot, Signal,
+};
 use pmbot_core::types::{MarketId, Symbol};
 use pmbot_executor::{ExecutorActor, LiveExecutor, PaperExecutor};
 use pmbot_feed::{FeedActor, RawFeedMessage, VolMethod, run_binance_ws};
@@ -107,62 +109,76 @@ fn build_strategies(config: &BotConfig) -> StrategyRegistry {
     for name in &config.general.strategies {
         let strategy: Box<dyn Strategy> = match name.as_str() {
             "lead_lag" => {
-                if !config.strategy.lead_lag.enabled { continue; }
+                if !config.strategy.lead_lag.enabled {
+                    continue;
+                }
                 Box::new(LeadLag::new(
                     config.strategy.lead_lag.lag_threshold,
                     config.strategy.lead_lag.entry_delay_ms,
                     config.strategy.lead_lag.exit_convergence_pct,
                 ))
-            },
+            }
             "fair_value" => {
-                if !config.strategy.fair_value.enabled { continue; }
+                if !config.strategy.fair_value.enabled {
+                    continue;
+                }
                 Box::new(FairValue::new(
                     config.strategy.fair_value.vol_multiplier,
                     config.strategy.fair_value.min_time_to_expiry_secs,
                     config.strategy.fair_value.min_activation_edge,
                 ))
-            },
+            }
             "flash_crash" => {
-                if !config.strategy.flash_crash.enabled { continue; }
+                if !config.strategy.flash_crash.enabled {
+                    continue;
+                }
                 Box::new(FlashCrash::new(
                     config.strategy.flash_crash.drop_threshold,
                     config.strategy.flash_crash.lookback_secs,
                     config.strategy.flash_crash.reversion_target,
                     config.strategy.flash_crash.min_recovery_imbalance,
                 ))
-            },
+            }
             "book_imbalance" => {
-                if !config.strategy.book_imbalance.enabled { continue; }
+                if !config.strategy.book_imbalance.enabled {
+                    continue;
+                }
                 Box::new(BookImbalance::new(
                     config.strategy.book_imbalance.imbalance_threshold,
                     config.strategy.book_imbalance.levels,
                     config.strategy.book_imbalance.momentum_window,
                     config.strategy.book_imbalance.min_activation_edge,
                 ))
-            },
+            }
             "negrisk_arb" => {
-                if !config.strategy.negrisk_arb.enabled { continue; }
+                if !config.strategy.negrisk_arb.enabled {
+                    continue;
+                }
                 Box::new(NegRiskArb::new(
                     config.strategy.negrisk_arb.sum_deviation_threshold,
                 ))
-            },
+            }
             "convergence" => {
-                if !config.strategy.convergence.enabled { continue; }
+                if !config.strategy.convergence.enabled {
+                    continue;
+                }
                 Box::new(Convergence::new(
                     config.strategy.convergence.min_probability,
                     config.strategy.convergence.max_time_to_expiry_secs as i64,
                     config.strategy.convergence.min_activation_edge,
                 ))
-            },
+            }
             "market_maker" => {
-                if !config.strategy.market_maker.enabled { continue; }
+                if !config.strategy.market_maker.enabled {
+                    continue;
+                }
                 Box::new(MarketMaker::new(
                     config.strategy.market_maker.spread_bps as u32,
                     Decimal::from(config.strategy.market_maker.max_inventory),
                     Decimal::from(config.strategy.market_maker.quote_size),
                     config.strategy.market_maker.refresh_interval_ms,
                 ))
-            },
+            }
             other => {
                 warn!(name = other, "unknown strategy, skipping");
                 continue;
@@ -171,7 +187,6 @@ fn build_strategies(config: &BotConfig) -> StrategyRegistry {
         info!(name = name.as_str(), "registered strategy");
         registry.register(strategy);
     }
-
     registry
 }
 
@@ -197,8 +212,22 @@ struct ActorChannels {
     position_rx: tokio::sync::watch::Receiver<PositionSnapshot>,
     world_tx: tokio::sync::watch::Sender<pmbot_core::messages::WorldState>,
     world_rx: tokio::sync::watch::Receiver<pmbot_core::messages::WorldState>,
-    tui_tx: Option<tokio::sync::watch::Sender<Option<(pmbot_core::messages::WorldState, Vec<pmbot_core::messages::StrategyMetrics>)>>>,
-    tui_rx: Option<tokio::sync::watch::Receiver<Option<(pmbot_core::messages::WorldState, Vec<pmbot_core::messages::StrategyMetrics>)>>>,
+    tui_tx: Option<
+        tokio::sync::watch::Sender<
+            Option<(
+                pmbot_core::messages::WorldState,
+                Vec<pmbot_core::messages::StrategyMetrics>,
+            )>,
+        >,
+    >,
+    tui_rx: Option<
+        tokio::sync::watch::Receiver<
+            Option<(
+                pmbot_core::messages::WorldState,
+                Vec<pmbot_core::messages::StrategyMetrics>,
+            )>,
+        >,
+    >,
 }
 
 fn create_actor_channels(use_tui: bool) -> ActorChannels {
@@ -210,8 +239,12 @@ fn create_actor_channels(use_tui: bool) -> ActorChannels {
     let (book_tx, book_rx) = mpsc::channel(256);
     let (raw_trade_tx, raw_trade_rx) = mpsc::channel(256);
     let (shutdown_tx, _) = broadcast::channel(1);
-    let (position_tx, position_rx) = tokio::sync::watch::channel(PositionSnapshot { positions: vec![], daily_pnl: Decimal::ZERO });
-    let (world_tx, world_rx) = tokio::sync::watch::channel(pmbot_core::messages::WorldState::default());
+    let (position_tx, position_rx) = tokio::sync::watch::channel(PositionSnapshot {
+        positions: vec![],
+        daily_pnl: Decimal::ZERO,
+    });
+    let (world_tx, world_rx) =
+        tokio::sync::watch::channel(pmbot_core::messages::WorldState::default());
 
     let (tui_tx, tui_rx) = if use_tui {
         let (tx, rx) = tokio::sync::watch::channel(None);
@@ -263,7 +296,14 @@ fn build_common_actors(
     position_rx: tokio::sync::watch::Receiver<PositionSnapshot>,
     world_tx: tokio::sync::watch::Sender<pmbot_core::messages::WorldState>,
     world_rx: tokio::sync::watch::Receiver<pmbot_core::messages::WorldState>,
-    tui_tx: Option<tokio::sync::watch::Sender<Option<(pmbot_core::messages::WorldState, Vec<pmbot_core::messages::StrategyMetrics>)>>>,
+    tui_tx: Option<
+        tokio::sync::watch::Sender<
+            Option<(
+                pmbot_core::messages::WorldState,
+                Vec<pmbot_core::messages::StrategyMetrics>,
+            )>,
+        >,
+    >,
     registry: StrategyRegistry,
 ) -> CommonActors {
     let symbols: Vec<Symbol> = config
@@ -327,7 +367,10 @@ fn build_common_actors(
 // ---------------------------------------------------------------------------
 
 async fn run_paper(config: BotConfig, config_path: PathBuf) -> Result<()> {
-    info!(mode = "paper", "starting actor orchestration with real market data");
+    info!(
+        mode = "paper",
+        "starting actor orchestration with real market data"
+    );
 
     let (_watcher, mut config_rx) = pmbot_core::config_watcher::start_config_watcher(
         config_path,
@@ -387,7 +430,11 @@ async fn run_paper(config: BotConfig, config_path: PathBuf) -> Result<()> {
         }
     });
 
-    let executor_actor = ExecutorActor::new(paper_executor, channels.order_rx, channels.execution_event_tx.clone());
+    let executor_actor = ExecutorActor::new(
+        paper_executor,
+        channels.order_rx,
+        channels.execution_event_tx.clone(),
+    );
 
     info!("spawning all actors...");
 
@@ -436,9 +483,7 @@ async fn run_paper(config: BotConfig, config_path: PathBuf) -> Result<()> {
 
     if !use_tui {
         info!("all actors running — press Ctrl+C to stop");
-        println!(
-            "\n  [PAPER] Bot is running in paper mode. Press Ctrl+C to stop.\n"
-        );
+        println!("\n  [PAPER] Bot is running in paper mode. Press Ctrl+C to stop.\n");
     }
 
     tokio::signal::ctrl_c()
@@ -450,8 +495,18 @@ async fn run_paper(config: BotConfig, config_path: PathBuf) -> Result<()> {
     }
     let _ = channels.shutdown_tx.send(());
     let _ = tokio::time::timeout(Duration::from_secs(5), async {
-        let _ = tokio::join!(binance_ws, polymarket_ws, market, feed, strat, risk, exec, tui);
-    }).await;
+        let _ = tokio::join!(
+            binance_ws,
+            polymarket_ws,
+            market,
+            feed,
+            strat,
+            risk,
+            exec,
+            tui
+        );
+    })
+    .await;
 
     println!("\n  Bot stopped. Goodbye!\n");
     Ok(())
@@ -461,7 +516,7 @@ async fn run_paper(config: BotConfig, config_path: PathBuf) -> Result<()> {
 // Run live mode — real SDK + real feeds
 // ---------------------------------------------------------------------------
 
-async fn run_live(config: BotConfig, config_path: PathBuf) -> Result<()> {
+async fn run_live(mut config: BotConfig, config_path: PathBuf) -> Result<()> {
     info!(mode = "live", "starting live actor orchestration");
 
     let (_watcher, mut config_rx) = pmbot_core::config_watcher::start_config_watcher(
@@ -480,8 +535,14 @@ async fn run_live(config: BotConfig, config_path: PathBuf) -> Result<()> {
     eprintln!("  WARNING: You are about to start LIVE trading");
     eprintln!("  Real orders will be placed with real money.");
     eprintln!("  Bankroll: ${}", config.risk.bankroll);
-    eprintln!("  Max position: {}% of bankroll", config.risk.max_position_pct * dec!(100));
-    eprintln!("  Daily loss limit: {}%", config.risk.daily_loss_limit_pct * dec!(100));
+    eprintln!(
+        "  Max position: {}% of bankroll",
+        config.risk.max_position_pct * dec!(100)
+    );
+    eprintln!(
+        "  Daily loss limit: {}%",
+        config.risk.daily_loss_limit_pct * dec!(100)
+    );
     eprintln!("  Kill switch: {}", config.risk.kill_switch_path);
     eprintln!("  ============================================");
     eprintln!();
@@ -499,12 +560,12 @@ async fn run_live(config: BotConfig, config_path: PathBuf) -> Result<()> {
     eprintln!();
 
     // --- Authenticate with Polymarket SDK ---
+    use alloy::primitives::Address;
     use alloy::signers::Signer as _;
     use alloy::signers::local::LocalSigner;
-    use alloy::primitives::Address;
     use polymarket_client_sdk::POLYGON;
-    use polymarket_client_sdk::clob::{Client as ClobClient, Config as ClobConfig};
     use polymarket_client_sdk::clob::types::SignatureType as SdkSignatureType;
+    use polymarket_client_sdk::clob::{Client as ClobClient, Config as ClobConfig};
     use std::str::FromStr as _;
 
     let private_key = std::env::var("PMBOT_PRIVATE_KEY")
@@ -528,8 +589,7 @@ async fn run_live(config: BotConfig, config_path: PathBuf) -> Result<()> {
 
     // If user provides an explicit funder/safe address, use it
     if let Ok(funder_hex) = std::env::var("POLY_SAFE_ADDRESS") {
-        let funder = Address::from_str(&funder_hex)
-            .context("invalid POLY_SAFE_ADDRESS")?;
+        let funder = Address::from_str(&funder_hex).context("invalid POLY_SAFE_ADDRESS")?;
         info!(%funder, "using explicit funder/safe address");
         auth_builder = auth_builder.funder(funder);
     }
@@ -538,8 +598,17 @@ async fn run_live(config: BotConfig, config_path: PathBuf) -> Result<()> {
         .authenticate()
         .await
         .context("CLOB authentication failed")?;
-
+    
     info!(sig_type = ?config.wallet.signature_type, "authenticated with Polymarket CLOB");
+
+    // Fetch real balance from Polymarket for live mode
+    let live_executor_temp = LiveExecutor::new(clob_client.clone(), signer.clone());
+    let live_balance = live_executor_temp.get_balance().await?;
+    info!(%live_balance, "fetched live account balance from Polymarket");
+    
+    // Update bankroll with actual balance
+    config.risk.bankroll = live_balance;
+    info!(bankroll = %config.risk.bankroll, "updated bankroll from live account");
 
     let use_tui = config.tui.enabled;
     let mut channels = create_actor_channels(use_tui);
@@ -565,7 +634,11 @@ async fn run_live(config: BotConfig, config_path: PathBuf) -> Result<()> {
     );
 
     let live_executor = LiveExecutor::new(clob_client, signer);
-    let executor_actor = ExecutorActor::new(live_executor, channels.order_rx, channels.execution_event_tx.clone());
+    let executor_actor = ExecutorActor::new(
+        live_executor,
+        channels.order_rx,
+        channels.execution_event_tx.clone(),
+    );
 
     info!("spawning all actors...");
 
@@ -626,8 +699,18 @@ async fn run_live(config: BotConfig, config_path: PathBuf) -> Result<()> {
     }
     let _ = channels.shutdown_tx.send(());
     let _ = tokio::time::timeout(Duration::from_secs(5), async {
-        let _ = tokio::join!(binance_ws, polymarket_ws, market, feed, strat, risk, exec, tui);
-    }).await;
+        let _ = tokio::join!(
+            binance_ws,
+            polymarket_ws,
+            market,
+            feed,
+            strat,
+            risk,
+            exec,
+            tui
+        );
+    })
+    .await;
 
     if !use_tui {
         println!("\n  Bot stopped. Goodbye!\n");
@@ -668,7 +751,7 @@ async fn main() -> Result<()> {
             }
 
             let _log_guard = init_tracing(&config.general.log_level, config.tui.enabled)?;
-            
+
             if !config.tui.enabled {
                 print_banner();
             }
@@ -701,9 +784,13 @@ async fn main() -> Result<()> {
     }
 }
 
-fn init_tracing(level: &str, use_tui: bool) -> Result<Option<tracing_appender::non_blocking::WorkerGuard>> {
+fn init_tracing(
+    level: &str,
+    use_tui: bool,
+) -> Result<Option<tracing_appender::non_blocking::WorkerGuard>> {
     let default_filter = format!("{level},polymarket_client_sdk::serde_helpers=error");
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_filter));
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_filter));
 
     if use_tui {
         let file_appender = tracing_appender::rolling::daily("logs", "pmbot.log");

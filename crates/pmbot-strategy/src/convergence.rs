@@ -11,7 +11,7 @@
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
-use tracing::debug;
+use tracing::{debug, info};
 
 use pmbot_core::messages::{Signal, StrategyMetrics, WorldState};
 use pmbot_core::types::{
@@ -32,6 +32,7 @@ enum ConvergenceState {
     InPosition {
         signal_id: SignalId,
         market_id: MarketId,
+        entry_price: Decimal,
     },
 }
 
@@ -39,10 +40,7 @@ enum ConvergenceState {
 // Convergence
 // ---------------------------------------------------------------------------
 
-/// Near-expiry convergence strategy.
-///
-/// Buys outcomes with high probability when close to expiry, expecting
-/// them to converge to 1.0.
+#[allow(dead_code)]
 pub struct Convergence {
     /// Minimum mid-price to consider (e.g., 0.90).
     min_probability: Decimal,
@@ -54,6 +52,14 @@ pub struct Convergence {
     state: ConvergenceState,
     /// Number of signals generated (for metrics).
     signals_generated: u64,
+    /// Number of trades executed.
+    trades: u64,
+    /// Number of winning trades.
+    wins: u64,
+    /// Number of losing trades.
+    losses: u64,
+    /// Total PnL.
+    total_pnl: Decimal,
 }
 
 impl Convergence {
@@ -73,6 +79,10 @@ impl Convergence {
             min_activation_edge,
             state: ConvergenceState::Scanning,
             signals_generated: 0,
+            trades: 0,
+            wins: 0,
+            losses: 0,
+            total_pnl: Decimal::ZERO,
         }
     }
 
@@ -139,6 +149,7 @@ impl Strategy for Convergence {
                     self.state = ConvergenceState::InPosition {
                         signal_id,
                         market_id: market_id.clone(),
+                        entry_price: mid,
                     };
 
                     debug!(
@@ -167,6 +178,7 @@ impl Strategy for Convergence {
             ConvergenceState::InPosition {
                 signal_id,
                 market_id,
+                ..
             } => {
                 // Check if thesis is broken: mid_price dropped significantly.
                 if let Some(snap) = world.markets.get(market_id)
@@ -197,8 +209,47 @@ impl Strategy for Convergence {
         }
     }
 
-    fn on_fill(&mut self, _fill: &FillEvent) {
-        debug!("convergence: fill received");
+    fn on_fill(&mut self, fill: &FillEvent) {
+        match &self.state {
+            ConvergenceState::InPosition {
+                signal_id,
+                entry_price,
+                ..
+            } => {
+                if fill.signal_id == *signal_id {
+                    // Entry fill
+                    self.trades += 1;
+                    info!(
+                        strategy = "convergence",
+                        ?fill.signal_id,
+                        price = %fill.price,
+                        "entry order filled"
+                    );
+                } else {
+                    // Exit fill - calculate PnL (convergence always buys)
+                    let pnl = (fill.price - entry_price) * fill.size;
+                    
+                    if pnl >= Decimal::ZERO {
+                        self.wins += 1;
+                    } else {
+                        self.losses += 1;
+                    }
+                    self.total_pnl += pnl;
+                    
+                    info!(
+                        strategy = "convergence",
+                        ?fill.signal_id,
+                        pnl = %pnl,
+                        total_trades = self.trades,
+                        wins = self.wins,
+                        losses = self.losses,
+                        total_pnl = %self.total_pnl,
+                        "position closed"
+                    );
+                }
+            }
+            _ => {}
+        }
     }
 
     fn on_market_change(&mut self, _old: &MarketId, _new: &MarketInfo) {
@@ -215,6 +266,10 @@ impl Strategy for Convergence {
                 _ => None,
             },
             signals_generated: self.signals_generated,
+            trades: 0,
+            wins: 0,
+            losses: 0,
+            total_pnl: Decimal::ZERO,
             custom: vec![
                 (
                     "min_prob",

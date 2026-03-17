@@ -11,7 +11,7 @@
 
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
-use tracing::debug;
+use tracing::{debug, info};
 
 use pmbot_core::messages::{Signal, StrategyMetrics, WorldState};
 use pmbot_core::types::{ExitReason, FillEvent, MarketId, MarketInfo, Side, SignalId};
@@ -31,6 +31,7 @@ enum NegRiskState {
         signal_id: SignalId,
         direction: ArbDirection,
         condition_id: String,
+        entry_price: Decimal,
     },
 }
 
@@ -46,10 +47,7 @@ enum ArbDirection {
 // NegRiskArb
 // ---------------------------------------------------------------------------
 
-/// NegRisk sum-deviation arbitrage strategy.
-///
-/// Groups NegRisk markets by `condition_id`, sums mid-prices, and trades
-/// when the sum deviates beyond the configured threshold.
+#[allow(dead_code)]
 pub struct NegRiskArb {
     /// Minimum deviation from 1.0 to trigger a trade (e.g., 0.02 = 2%).
     sum_deviation_threshold: Decimal,
@@ -57,6 +55,14 @@ pub struct NegRiskArb {
     state: NegRiskState,
     /// Number of signals generated (for metrics).
     signals_generated: u64,
+    /// Number of trades executed.
+    trades: u64,
+    /// Number of winning trades.
+    wins: u64,
+    /// Number of losing trades.
+    losses: u64,
+    /// Total PnL.
+    total_pnl: Decimal,
 }
 
 impl NegRiskArb {
@@ -68,6 +74,10 @@ impl NegRiskArb {
             sum_deviation_threshold,
             state: NegRiskState::Watching,
             signals_generated: 0,
+            trades: 0,
+            wins: 0,
+            losses: 0,
+            total_pnl: Decimal::ZERO,
         }
     }
 
@@ -142,12 +152,14 @@ impl Strategy for NegRiskArb {
 
                         let signal_id = SignalId::new();
                         self.signals_generated += 1;
+                        let entry_price = target_snap.mid_price.unwrap_or(Decimal::ZERO);
 
                         let edge = deviation;
                         self.state = NegRiskState::InPosition {
                             signal_id,
                             direction: ArbDirection::SellOverpriced,
                             condition_id: condition_id.to_string(),
+                            entry_price,
                         };
 
                         debug!(
@@ -182,12 +194,14 @@ impl Strategy for NegRiskArb {
 
                         let signal_id = SignalId::new();
                         self.signals_generated += 1;
+                        let entry_price = target_snap.mid_price.unwrap_or(Decimal::ZERO);
 
                         let edge = deviation.abs();
                         self.state = NegRiskState::InPosition {
                             signal_id,
                             direction: ArbDirection::BuyUnderpriced,
                             condition_id: condition_id.to_string(),
+                            entry_price,
                         };
 
                         debug!(
@@ -216,6 +230,7 @@ impl Strategy for NegRiskArb {
             NegRiskState::InPosition {
                 signal_id,
                 condition_id,
+                entry_price: _,
                 ..
             } => {
                 // Check if the condition group has converged back within threshold.
@@ -261,8 +276,53 @@ impl Strategy for NegRiskArb {
         }
     }
 
-    fn on_fill(&mut self, _fill: &FillEvent) {
-        debug!("negrisk_arb: fill received");
+    fn on_fill(&mut self, fill: &FillEvent) {
+        match &self.state {
+            NegRiskState::InPosition {
+                signal_id,
+                direction,
+                entry_price,
+                ..
+            } => {
+                if fill.signal_id == *signal_id {
+                    // Entry fill
+                    self.trades += 1;
+                    info!(
+                        strategy = "negrisk_arb",
+                        ?fill.signal_id,
+                        price = %fill.price,
+                        "entry order filled"
+                    );
+                } else {
+                    // Exit fill - calculate PnL
+                    // For SellOverpriced: we sold at entry_price, buy back at exit price
+                    // For BuyUnderpriced: we bought at entry_price, sell at exit price
+                    let pnl = match direction {
+                        ArbDirection::SellOverpriced => (entry_price - fill.price) * fill.size,
+                        ArbDirection::BuyUnderpriced => (fill.price - entry_price) * fill.size,
+                    };
+
+                    if pnl >= Decimal::ZERO {
+                        self.wins += 1;
+                    } else {
+                        self.losses += 1;
+                    }
+                    self.total_pnl += pnl;
+
+                    info!(
+                        strategy = "negrisk_arb",
+                        ?fill.signal_id,
+                        pnl = %pnl,
+                        total_trades = self.trades,
+                        wins = self.wins,
+                        losses = self.losses,
+                        total_pnl = %self.total_pnl,
+                        "position closed"
+                    );
+                }
+            }
+            _ => {}
+        }
     }
 
     fn on_market_change(&mut self, _old: &MarketId, _new: &MarketInfo) {
@@ -282,6 +342,10 @@ impl Strategy for NegRiskArb {
                 _ => None,
             },
             signals_generated: self.signals_generated,
+            trades: 0,
+            wins: 0,
+            losses: 0,
+            total_pnl: Decimal::ZERO,
             custom: vec![(
                 "threshold",
                 format!("{:.2}%", self.sum_deviation_threshold * dec!(100)),

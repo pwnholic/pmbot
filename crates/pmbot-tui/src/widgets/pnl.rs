@@ -25,7 +25,8 @@ impl Widget for PnlWidget {
             .title(" PnL ")
             .title_style(theme::title_style())
             .borders(Borders::ALL)
-            .border_style(theme::border_style());
+            .border_style(theme::border_style())
+            .style(Style::default().bg(theme::BG_DARK));
         let inner = block.inner(area);
         block.render(area, buf);
 

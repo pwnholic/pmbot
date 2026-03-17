@@ -301,6 +301,10 @@ mod tests {
                 state: "active",
                 edge: Some(dec!(0.05)),
                 signals_generated: self.count,
+                trades: 0,
+                wins: 0,
+                losses: 0,
+                total_pnl: Decimal::ZERO,
                 custom: Vec::new(),
             }
         }

@@ -7,7 +7,7 @@
 
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
-use tracing::debug;
+use tracing::{debug, info};
 
 use pmbot_core::messages::{Signal, StrategyMetrics, WorldState};
 use pmbot_core::types::{ExitReason, FillEvent, MarketId, MarketInfo, Side, SignalId};
@@ -34,11 +34,7 @@ enum FlashCrashState {
 // FlashCrash
 // ---------------------------------------------------------------------------
 
-/// Flash-crash mean-reversion strategy.
-///
-/// Detects sharp drops relative to a rolling mean and enters a Buy
-/// position expecting a reversion to the mean. Exits when price
-/// recovers by a configurable fraction of the drop.
+#[allow(dead_code)]
 pub struct FlashCrash {
     /// Minimum relative drop from mean to trigger entry (e.g., 0.15 = 15%).
     drop_threshold: Decimal,
@@ -52,6 +48,14 @@ pub struct FlashCrash {
     state: FlashCrashState,
     /// Number of signals generated.
     signals_generated: u64,
+    /// Number of trades executed.
+    trades: u64,
+    /// Number of winning trades.
+    wins: u64,
+    /// Number of losing trades.
+    losses: u64,
+    /// Total PnL.
+    total_pnl: Decimal,
 }
 
 impl FlashCrash {
@@ -74,6 +78,10 @@ impl FlashCrash {
             min_recovery_imbalance,
             state: FlashCrashState::Watching,
             signals_generated: 0,
+            trades: 0,
+            wins: 0,
+            losses: 0,
+            total_pnl: Decimal::ZERO,
         }
     }
 
@@ -216,8 +224,47 @@ impl Strategy for FlashCrash {
         }
     }
 
-    fn on_fill(&mut self, _fill: &FillEvent) {
-        debug!("flash_crash: fill received");
+    fn on_fill(&mut self, fill: &FillEvent) {
+        match &self.state {
+            FlashCrashState::InPosition {
+                signal_id,
+                entry_price,
+                ..
+            } => {
+                if fill.signal_id == *signal_id {
+                    // Entry fill
+                    self.trades += 1;
+                    info!(
+                        strategy = "flash_crash",
+                        ?fill.signal_id,
+                        price = %fill.price,
+                        "entry order filled"
+                    );
+                } else {
+                    // Exit fill - calculate PnL (flash_crash always buys)
+                    let pnl = (fill.price - entry_price) * fill.size;
+
+                    if pnl >= Decimal::ZERO {
+                        self.wins += 1;
+                    } else {
+                        self.losses += 1;
+                    }
+                    self.total_pnl += pnl;
+
+                    info!(
+                        strategy = "flash_crash",
+                        ?fill.signal_id,
+                        pnl = %pnl,
+                        total_trades = self.trades,
+                        wins = self.wins,
+                        losses = self.losses,
+                        total_pnl = %self.total_pnl,
+                        "position closed"
+                    );
+                }
+            }
+            _ => {}
+        }
     }
 
     fn on_market_change(&mut self, _old: &MarketId, _new: &MarketInfo) {
@@ -238,6 +285,10 @@ impl Strategy for FlashCrash {
                 _ => None,
             },
             signals_generated: self.signals_generated,
+            trades: 0,
+            wins: 0,
+            losses: 0,
+            total_pnl: Decimal::ZERO,
             custom: vec![
                 (
                     "drop_threshold",
