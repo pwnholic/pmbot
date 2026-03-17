@@ -8,6 +8,7 @@
 pub mod app;
 pub mod layout;
 pub mod run;
+pub mod theme;
 pub mod ui;
 pub mod widgets;
 

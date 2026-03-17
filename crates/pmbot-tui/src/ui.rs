@@ -1,14 +1,10 @@
 use ratatui::Frame;
 
-use crate::{App, AppLayout};
 use crate::widgets::{
-    log::LogWidget,
-    market::MarketWidget,
-    orderbook::OrderbookWidget,
-    pnl::PnlWidget,
-    positions::PositionsWidget,
-    strategy::StrategyWidget,
+    log::LogWidget, market::MarketWidget, orderbook::OrderbookWidget, pnl::PnlWidget,
+    positions::PositionsWidget, strategy::StrategyWidget,
 };
+use crate::{App, AppLayout};
 
 /// Draw the entire TUI application dashboard to the frame.
 pub fn draw(f: &mut Frame, app: &mut App) {
@@ -28,7 +24,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         }
     }
 
-    // Market info
+    // Market info (top-left)
     let empty_latency = std::collections::HashMap::new();
     let latency = if let Some(world) = &app.world {
         &world.network_latency
@@ -37,17 +33,31 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     };
     f.render_widget(MarketWidget::new(active_snap, latency), layout.market_info);
 
-    // Strategy metrics
-    f.render_widget(StrategyWidget::new(&app.strategy_metrics), layout.strategy_panel);
+    // Strategy metrics (top-center)
+    f.render_widget(
+        StrategyWidget::new(&app.strategy_metrics),
+        layout.strategy_panel,
+    );
 
-    // Orderbook
+    // PnL (top-right)
+    let (balance, daily_pnl) = if let Some(world) = &app.world {
+        (world.balance, world.daily_pnl)
+    } else {
+        (rust_decimal::Decimal::ZERO, rust_decimal::Decimal::ZERO)
+    };
+    f.render_widget(
+        PnlWidget::new(&app.pnl_history, balance, daily_pnl),
+        layout.risk_panel,
+    );
+
+    // Orderbook (middle-left)
     let mut orderbook = OrderbookWidget::new(bids, asks);
     if let Some(snap) = active_snap {
         orderbook = orderbook.mid_price(snap.mid_price);
     }
-    f.render_widget(orderbook.max_levels(10), layout.orderbook);
+    f.render_widget(orderbook.max_levels(12), layout.orderbook);
 
-    // Positions
+    // Positions (middle-right)
     let positions = if let Some(world) = &app.world {
         &world.positions[..]
     } else {
@@ -55,14 +65,6 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     };
     f.render_widget(PositionsWidget::new(positions), layout.positions);
 
-    // PnL
-    let (balance, daily_pnl) = if let Some(world) = &app.world {
-        (world.balance, world.daily_pnl)
-    } else {
-        (rust_decimal::Decimal::ZERO, rust_decimal::Decimal::ZERO)
-    };
-    f.render_widget(PnlWidget::new(&app.pnl_history, balance, daily_pnl), layout.risk_panel);
-
-    // Logs
+    // Logs (bottom)
     f.render_widget(LogWidget::new(&app.logs), layout.log_panel);
 }

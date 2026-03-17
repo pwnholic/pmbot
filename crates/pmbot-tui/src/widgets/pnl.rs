@@ -1,14 +1,14 @@
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Sparkline, Widget};
 use rust_decimal::Decimal;
 use std::collections::VecDeque;
 
+use crate::theme;
+
 /// Widget that renders PnL summary and sparkline.
-///
-/// Shows current bankroll, daily PnL, and a sparkline of recent PnL history.
 pub struct PnlWidget<'a> {
     data: &'a VecDeque<Decimal>,
     balance: Decimal,
@@ -16,23 +16,11 @@ pub struct PnlWidget<'a> {
 }
 
 impl<'a> PnlWidget<'a> {
-    /// Create a new PnL widget.
     pub fn new(data: &'a VecDeque<Decimal>, balance: Decimal, daily_pnl: Decimal) -> Self {
         Self {
             data,
             balance,
             daily_pnl,
-        }
-    }
-
-    /// Choose color for PnL display.
-    fn pnl_color(pnl: Decimal) -> Color {
-        if pnl > Decimal::ZERO {
-            Color::Green
-        } else if pnl < Decimal::ZERO {
-            Color::Red
-        } else {
-            Color::White
         }
     }
 }
@@ -41,7 +29,9 @@ impl Widget for PnlWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let block = Block::default()
             .title(" PnL ")
-            .borders(Borders::ALL);
+            .title_style(theme::title_style())
+            .borders(Borders::ALL)
+            .border_style(theme::border_style());
         let inner = block.inner(area);
         block.render(area, buf);
 
@@ -49,36 +39,43 @@ impl Widget for PnlWidget<'_> {
             return;
         }
 
-        // Split inner into text summary (2 lines) and sparkline (rest).
+        // Split: text summary (2 lines) + sparkline
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Length(2), Constraint::Min(1)])
             .split(inner);
 
-        // Summary text
-        let pnl_color = Self::pnl_color(self.daily_pnl);
+        // PnL text
+        let pnl_style = if self.daily_pnl > Decimal::ZERO {
+            theme::profit()
+        } else if self.daily_pnl < Decimal::ZERO {
+            theme::loss()
+        } else {
+            theme::value()
+        };
+
+        let pnl_str = if self.daily_pnl >= Decimal::ZERO {
+            format!("+${}", self.daily_pnl.round_dp(2))
+        } else {
+            format!("-${}", self.daily_pnl.abs().round_dp(2))
+        };
+
         let summary = Paragraph::new(vec![
             Line::from(vec![
-                Span::styled("Bankroll: ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Balance: ", theme::label()),
                 Span::styled(
                     format!("${}", self.balance.round_dp(2)),
-                    Style::default()
-                        .fg(Color::White)
-                        .add_modifier(Modifier::BOLD),
+                    Style::default().fg(theme::FG).add_modifier(Modifier::BOLD),
                 ),
             ]),
             Line::from(vec![
-                Span::styled("Day PnL:  ", Style::default().fg(Color::DarkGray)),
-                Span::styled(
-                    format!("${}", self.daily_pnl.round_dp(2)),
-                    Style::default().fg(pnl_color),
-                ),
+                Span::styled("Day PnL: ", theme::label()),
+                Span::styled(pnl_str, pnl_style),
             ]),
         ]);
         summary.render(chunks[0], buf);
 
-        // Convert Decimal PnL history to u64 for sparkline.
-        // Shift values so minimum maps to 0.
+        // Sparkline
         if !self.data.is_empty() {
             let min_val = self.data.iter().copied().min().unwrap_or(Decimal::ZERO);
             let sparkline_data: Vec<u64> = self
@@ -86,17 +83,16 @@ impl Widget for PnlWidget<'_> {
                 .iter()
                 .map(|d| {
                     let shifted = *d - min_val;
-                    // Scale to reasonable u64 range
                     let scaled = shifted * Decimal::from(100);
-                    scaled
-                        .to_string()
-                        .parse::<f64>()
-                        .unwrap_or(0.0)
-                        .round() as u64
+                    scaled.to_string().parse::<f64>().unwrap_or(0.0).round() as u64
                 })
                 .collect();
 
-            let spark_color = Self::pnl_color(self.daily_pnl);
+            let spark_color = if self.daily_pnl >= Decimal::ZERO {
+                theme::GREEN
+            } else {
+                theme::RED
+            };
             let sparkline = Sparkline::default()
                 .data(&sparkline_data)
                 .style(Style::default().fg(spark_color));

@@ -1,6 +1,6 @@
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 
@@ -8,6 +8,8 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use pmbot_core::messages::MarketSnapshot;
+
+use crate::theme;
 
 /// Widget that renders market information.
 ///
@@ -18,7 +20,6 @@ pub struct MarketWidget<'a> {
 }
 
 impl<'a> MarketWidget<'a> {
-    /// Create a new market widget, optionally with a snapshot and latency map.
     pub fn new(
         snapshot: Option<&'a MarketSnapshot>,
         latency: &'a HashMap<&'static str, Duration>,
@@ -31,23 +32,25 @@ impl Widget for MarketWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let block = Block::default()
             .title(" Market ")
-            .borders(Borders::ALL);
+            .title_style(theme::title_style())
+            .borders(Borders::ALL)
+            .border_style(theme::border_style());
         let inner = block.inner(area);
         block.render(area, buf);
 
         let Some(snap) = self.snapshot else {
-            let p = Paragraph::new("No market data");
+            let p = Paragraph::new("Waiting for market data...").style(theme::label());
             p.render(inner, buf);
             return;
         };
 
         let mut lines: Vec<Line<'_>> = Vec::new();
 
-        // Market slug / question
+        // Market slug
         lines.push(Line::from(Span::styled(
             snap.info.slug.clone(),
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme::CYAN)
                 .add_modifier(Modifier::BOLD),
         )));
 
@@ -57,37 +60,31 @@ impl Widget for MarketWidget<'_> {
             .map(|p| p.round_dp(4).to_string())
             .unwrap_or_else(|| "---".into());
         lines.push(Line::from(vec![
-            Span::styled("Mid:       ", Style::default().fg(Color::DarkGray)),
-            Span::raw(mid_str),
+            Span::styled("Mid:    ", theme::label()),
+            Span::styled(mid_str, theme::value()),
         ]));
 
         // Spread
         let spread_str = snap
             .spread
-            .map(|s| s.round_dp(4).to_string())
+            .map(|s| format!("{} ({:.1}%)", s.round_dp(4), decimal_to_f64(s) * 100.0))
             .unwrap_or_else(|| "---".into());
         lines.push(Line::from(vec![
-            Span::styled("Spread:    ", Style::default().fg(Color::DarkGray)),
-            Span::raw(spread_str),
+            Span::styled("Spread: ", theme::label()),
+            Span::styled(spread_str, theme::value()),
         ]));
 
-        // Imbalance
-        lines.push(Line::from(vec![
-            Span::styled("Imbalance: ", Style::default().fg(Color::DarkGray)),
-            Span::raw(snap.imbalance.round_dp(4).to_string()),
-        ]));
-
-        // Time to expiry
+        // Time to expiry (compact)
         let expiry_str = match snap.info.end_date {
             Some(end) => {
                 let now = chrono::Utc::now();
                 if end > now {
                     let dur = end - now;
-                    let hours = dur.num_hours();
-                    let days = hours / 24;
-                    if days > 0 {
-                        format!("{}d {}h", days, hours % 24)
+                    let total_secs = dur.num_seconds();
+                    if total_secs < 600 {
+                        format!("{}m {}s", dur.num_minutes(), total_secs % 60)
                     } else {
+                        let hours = dur.num_hours();
                         format!("{}h {}m", hours, dur.num_minutes() % 60)
                     }
                 } else {
@@ -96,30 +93,40 @@ impl Widget for MarketWidget<'_> {
             }
             None => "N/A".into(),
         };
+        let expiry_style = if expiry_str == "EXPIRED" {
+            Style::default().fg(theme::RED).add_modifier(Modifier::BOLD)
+        } else {
+            theme::value()
+        };
         lines.push(Line::from(vec![
-            Span::styled("Expiry:    ", Style::default().fg(Color::DarkGray)),
-            Span::raw(expiry_str),
+            Span::styled("Expiry: ", theme::label()),
+            Span::styled(expiry_str, expiry_style),
         ]));
 
-        // Network latency
-        lines.push(Line::from("")); // spacer
-        let binance_ping = self.latency.get("binance")
+        // Ping latency (compact, single line)
+        let binance_ping = self
+            .latency
+            .get("binance")
             .map(|dur| format!("{}ms", dur.as_millis()))
             .unwrap_or_else(|| "---".into());
-
-        let poly_ping = self.latency.get("polymarket")
+        let poly_ping = self
+            .latency
+            .get("polymarket")
             .map(|dur| format!("{}ms", dur.as_millis()))
             .unwrap_or_else(|| "---".into());
-
         lines.push(Line::from(vec![
-             Span::styled("Ping:      ", Style::default().fg(Color::DarkGray)),
-             Span::styled("Binance ", Style::default().fg(Color::Yellow)),
-             Span::raw(binance_ping),
-             Span::styled(" | Poly ", Style::default().fg(Color::Blue)),
-             Span::raw(poly_ping),
+            Span::styled("Ping:   ", theme::label()),
+            Span::styled(binance_ping, Style::default().fg(theme::YELLOW)),
+            Span::styled(" | ", theme::label()),
+            Span::styled(poly_ping, Style::default().fg(theme::BLUE)),
         ]));
 
         let paragraph = Paragraph::new(lines);
         paragraph.render(inner, buf);
     }
+}
+
+fn decimal_to_f64(d: rust_decimal::Decimal) -> f64 {
+    use std::str::FromStr;
+    f64::from_str(&d.to_string()).unwrap_or(0.0)
 }
