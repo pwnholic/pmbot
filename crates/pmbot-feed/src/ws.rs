@@ -95,10 +95,9 @@ async fn connect_and_stream(
 
     info!("connected to Binance WebSocket");
 
-    let (mut write, mut read) = ws_stream.split();
-    let mut ping_interval = tokio::time::interval(Duration::from_secs(5));
-    // When we sent the last ping
-    let mut last_ping_time: Option<std::time::Instant> = None;
+    let (_write, mut read) = ws_stream.split();
+    let mut ping_interval = tokio::time::interval(Duration::from_secs(10));
+    let reqwest_client = reqwest::Client::new();
 
     loop {
         tokio::select! {
@@ -130,16 +129,7 @@ async fn connect_and_stream(
                         warn!("Binance WebSocket closed by server");
                         anyhow::bail!("WebSocket closed by server");
                     }
-                    Some(Ok(tokio_tungstenite::tungstenite::Message::Pong(_))) => {
-                        if let Some(sent) = last_ping_time.take() {
-                            let latency = sent.elapsed();
-                            // Send latency update to actor
-                            if msg_tx.send(RawFeedMessage::Latency(latency)).await.is_err() {
-                                return Ok(());
-                            }
-                        }
-                    }
-                    Some(Ok(_)) => {} // Other Ping, Binary — ignore
+                    Some(Ok(_)) => {} // Ping, Pong, Binary — ignore
                     Some(Err(e)) => {
                         anyhow::bail!("WebSocket read error: {e}");
                     }
@@ -149,9 +139,20 @@ async fn connect_and_stream(
                 }
             }
             _ = ping_interval.tick() => {
-                last_ping_time = Some(std::time::Instant::now());
-                if futures::SinkExt::send(&mut write, tokio_tungstenite::tungstenite::Message::Ping(vec![].into())).await.is_err() {
-                    return Ok(());
+                let start = std::time::Instant::now();
+                // We use REST ping because tokio_tungstenite swallows Pong frames internally.
+                let res = reqwest_client.get("https://api.binance.com/api/v3/ping").send().await;
+                match res {
+                    Ok(_) => {
+                        let latency = start.elapsed();
+                        tracing::info!(latency_ms = latency.as_millis(), "Binance REST ping successful");
+                        if msg_tx.send(RawFeedMessage::Latency(latency)).await.is_err() {
+                            return Ok(());
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(%e, "failed to ping binance rest api");
+                    }
                 }
             }
         }

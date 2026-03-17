@@ -3576,6 +3576,7 @@ dependencies = [
  "futures",
  "native-tls",
  "pmbot-core",
+ "reqwest 0.13.2",
  "rust_decimal",
  "rust_decimal_macros",
  "serde",
