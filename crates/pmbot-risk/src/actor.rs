@@ -7,7 +7,7 @@ use tokio::sync::{broadcast, mpsc};
 use tracing::{info, warn};
 
 use pmbot_core::config::RiskConfig;
-use pmbot_core::messages::{ExecutableOrder, ExecutionEvent, Signal, WorldState};
+use pmbot_core::messages::{ExecutableOrder, ExecutionEvent, MarketEvent, Position, PositionSnapshot, Signal, WorldState};
 use pmbot_core::types::*;
 
 use crate::kelly::fractional_kelly;
@@ -35,6 +35,9 @@ pub struct RiskActor {
     signal_rx: mpsc::Receiver<Signal>,
     order_tx: mpsc::Sender<ExecutableOrder>,
     execution_rx: broadcast::Receiver<ExecutionEvent>,
+    market_rx: broadcast::Receiver<MarketEvent>,
+    position_tx: tokio::sync::watch::Sender<PositionSnapshot>,
+    world_rx: tokio::sync::watch::Receiver<WorldState>,
 }
 
 impl RiskActor {
@@ -44,6 +47,9 @@ impl RiskActor {
         signal_rx: mpsc::Receiver<Signal>,
         order_tx: mpsc::Sender<ExecutableOrder>,
         execution_rx: broadcast::Receiver<ExecutionEvent>,
+        market_rx: broadcast::Receiver<MarketEvent>,
+        position_tx: tokio::sync::watch::Sender<PositionSnapshot>,
+        world_rx: tokio::sync::watch::Receiver<WorldState>,
     ) -> Self {
         let breaker = CircuitBreaker::new(config.clone());
         let portfolio = PortfolioRisk {
@@ -65,6 +71,9 @@ impl RiskActor {
             signal_rx,
             order_tx,
             execution_rx,
+            market_rx,
+            position_tx,
+            world_rx,
         }
     }
 
@@ -155,6 +164,7 @@ impl RiskActor {
                 self.positions.insert(pos.id, pos);
                 self.breaker
                     .update_position_count(self.open_position_count());
+                self.broadcast_positions();
 
                 // 7. Emit order
                 let order = if price.is_some() {
@@ -262,13 +272,41 @@ impl RiskActor {
                 price,
                 size,
             } => {
-                // Find the pending position matching this signal
-                if let Some(pos) = self
+                // Check if this is a closing fill first
+                let is_closing = self
+                    .positions
+                    .values()
+                    .any(|p| p.signal_id == *signal_id && matches!(p.state, crate::position::PositionState::Closing { .. }));
+
+                if is_closing {
+                    // Find the closing position and close it
+                    if let Some(pos) = self
+                        .positions
+                        .values_mut()
+                        .find(|p| p.signal_id == *signal_id)
+                    {
+                        match pos.close(*price) {
+                            Ok(realized_pnl) => {
+                                info!(?signal_id, %price, %realized_pnl, "position closed on fill");
+                                self.breaker.update_pnl(realized_pnl);
+                            }
+                            Err(e) => {
+                                warn!(?signal_id, %e, "failed to close position");
+                            }
+                        }
+                    }
+                    // Remove closed positions
+                    self.positions.retain(|_, p| !matches!(p.state, crate::position::PositionState::Closed { .. }));
+                    self.breaker
+                        .update_position_count(self.open_position_count());
+                    self.broadcast_positions();
+                } else if let Some(pos) = self
                     .positions
                     .values_mut()
                     .find(|p| p.signal_id == *signal_id)
                     .filter(|p| matches!(p.state, crate::position::PositionState::Pending { .. }))
                 {
+                    // Opening fill for a pending position
                     let edge = Decimal::new(10, 2); // default edge for TP/SL computation
                     let (tp, sl) = compute_tp_sl(
                         *price,
@@ -282,17 +320,22 @@ impl RiskActor {
                     }
                     self.breaker
                         .update_position_count(self.open_position_count());
+                    self.broadcast_positions();
                     info!(?signal_id, %price, %size, "position opened on fill");
                 }
             }
 
             ExecutionEvent::OrderCancelled { order_id } => {
                 // Remove any pending position with this order ID
+                let before = self.positions.len();
                 self.positions.retain(|_, p| {
                     !matches!(&p.state, crate::position::PositionState::Pending { order_id: oid } if oid == order_id)
                 });
                 self.breaker
                     .update_position_count(self.open_position_count());
+                if self.positions.len() != before {
+                    self.broadcast_positions();
+                }
             }
 
             ExecutionEvent::OrderRejected {
@@ -302,9 +345,13 @@ impl RiskActor {
             } => {
                 warn!(?signal_id, %reason, "order rejected by executor");
                 // Remove pending position for this signal
+                let before = self.positions.len();
                 self.positions.retain(|_, p| p.signal_id != *signal_id);
                 self.breaker
                     .update_position_count(self.open_position_count());
+                if self.positions.len() != before {
+                    self.broadcast_positions();
+                }
             }
 
             _ => {}
@@ -350,16 +397,46 @@ impl RiskActor {
                         }
                     }
                 }
+                event = self.market_rx.recv() => {
+                    match event {
+                        Ok(MarketEvent::MarketRotation { old, new }) => {
+                            info!(%old, new_market = %new.id, "market rotation — force-closing all positions");
+                            self.force_close_all_positions();
+                        }
+                        Ok(_) => {} // ignore other market events
+                        Err(broadcast::error::RecvError::Closed) => {
+                            info!("market event channel closed");
+                            break;
+                        }
+                        Err(broadcast::error::RecvError::Lagged(n)) => {
+                            warn!(n, "risk actor lagged on market events");
+                        }
+                    }
+                }
+                result = self.world_rx.changed() => {
+                    match result {
+                        Ok(()) => {
+                            let world = self.world_rx.borrow_and_update().clone();
+                            self.world = world.clone();
+                            // Re-broadcast positions with updated market prices for live PnL
+                            if !self.positions.is_empty() {
+                                self.broadcast_positions();
+                            }
+                            // Check TP/SL for all open positions
+                            self.check_tp_sl(&world);
+                        }
+                        Err(_) => {
+                            info!("world channel closed");
+                            break;
+                        }
+                    }
+                }
                 event = self.execution_rx.recv() => {
                     match event {
                         Ok(ev) => {
                             self.handle_execution_event(&ev);
-                            // Simple update for world state (simulating a balance/PNL update logic based on fills)
                             if let pmbot_core::messages::ExecutionEvent::OrderFilled { .. } = ev {
-                                // Real implementation would track it via an independent builder,
-                                // but for now we manually apply to the simulated world state
-                                // to bypass H8 InsufficientBalance issue.
-                                self.world.balance = self.bankroll; // Or dynamically track it
+                                self.world.balance = self.bankroll;
                             }
                         }
                         Err(broadcast::error::RecvError::Closed) => {
@@ -384,6 +461,157 @@ impl RiskActor {
     /// Count of currently open positions.
     fn open_position_count(&self) -> usize {
         self.positions.values().filter(|p| p.is_open()).count()
+    }
+
+    /// Broadcast a snapshot of all non-closed positions to the strategy actor.
+    fn broadcast_positions(&self) {
+        let positions: Vec<Position> = self
+            .positions
+            .values()
+            .filter_map(|tp| match &tp.state {
+                crate::position::PositionState::Open {
+                    entry_price,
+                    size,
+                    side,
+                    opened_at,
+                    tp_price,
+                    sl_price,
+                } => Some(Position {
+                    id: tp.id,
+                    market_id: tp.market_id.clone(),
+                    token_id: tp.token_id.clone(),
+                    strategy: tp.strategy,
+                    side: *side,
+                    entry_price: *entry_price,
+                    size: *size,
+                    tp_price: *tp_price,
+                    sl_price: *sl_price,
+                    opened_at: *opened_at,
+                    unrealized_pnl: tp.unrealized_pnl(
+                        self.world
+                            .markets
+                            .get(&tp.market_id)
+                            .and_then(|m| m.mid_price)
+                            .unwrap_or(*entry_price),
+                    ),
+                }),
+                crate::position::PositionState::Pending { .. } => Some(Position {
+                    id: tp.id,
+                    market_id: tp.market_id.clone(),
+                    token_id: tp.token_id.clone(),
+                    strategy: tp.strategy,
+                    side: Side::Buy, // default; actual side unknown until filled
+                    entry_price: Decimal::ZERO,
+                    size: Decimal::ZERO,
+                    tp_price: Decimal::ZERO,
+                    sl_price: Decimal::ZERO,
+                    opened_at: chrono::Utc::now(),
+                    unrealized_pnl: Decimal::ZERO,
+                }),
+                _ => None, // Skip Closing / Closed
+            })
+            .collect();
+
+        // Total PnL = realized (from circuit breaker) + unrealized (from open positions)
+        let unrealized: Decimal = positions.iter().map(|p| p.unrealized_pnl).sum();
+        let daily_pnl = self.breaker.daily_pnl() + unrealized;
+
+        let _ = self.position_tx.send(PositionSnapshot { positions, daily_pnl });
+    }
+
+    /// Force-close all positions on market rotation.
+    ///
+    /// Computes realized PnL using current mid price, updates the circuit breaker,
+    /// clears all tracked positions, and broadcasts the empty state.
+    fn force_close_all_positions(&mut self) {
+        for (_, tp) in self.positions.iter() {
+            if let crate::position::PositionState::Open {
+                entry_price,
+                size,
+                side,
+                ..
+            } = &tp.state
+            {
+                let mid = self
+                    .world
+                    .markets
+                    .get(&tp.market_id)
+                    .and_then(|m| m.mid_price)
+                    .unwrap_or(*entry_price);
+                let realized = match side {
+                    Side::Buy => (mid - entry_price) * size,
+                    Side::Sell => (entry_price - mid) * size,
+                };
+                self.breaker.update_pnl(realized);
+                info!(
+                    strategy = tp.strategy,
+                    ?tp.signal_id,
+                    %realized,
+                    "force-closed position on market rotation"
+                );
+            }
+        }
+        let count = self.positions.len();
+        self.positions.clear();
+        self.breaker.update_position_count(0);
+        self.broadcast_positions();
+        info!(count, "cleared all positions after market rotation");
+    }
+
+    /// Check all open positions for TP/SL triggers and emit Exit signals if triggered.
+    fn check_tp_sl(&mut self, world: &WorldState) {
+        let mut signals_to_emit = Vec::new();
+
+        for (pos_id, tp) in self.positions.iter() {
+            if let crate::position::PositionState::Open { .. } = &tp.state {
+                // Get current mid price for this market
+                let mid_price = match world.markets.get(&tp.market_id).and_then(|m| m.mid_price) {
+                    Some(p) => p,
+                    None => continue, // No price data
+                };
+
+                let should_exit = if tp.should_take_profit(mid_price) {
+                    info!(
+                        strategy = tp.strategy,
+                        ?pos_id,
+                        %mid_price,
+                        "TP triggered"
+                    );
+                    true
+                } else if tp.should_stop_loss(mid_price) {
+                    info!(
+                        strategy = tp.strategy,
+                        ?pos_id,
+                        %mid_price,
+                        "SL triggered"
+                    );
+                    true
+                } else {
+                    false
+                };
+
+                if should_exit {
+                    signals_to_emit.push(Signal::Exit {
+                        id: SignalId::new(),
+                        strategy: tp.strategy,
+                        signal_id: tp.signal_id,
+                        reason: if tp.should_take_profit(mid_price) {
+                            pmbot_core::types::ExitReason::TakeProfit
+                        } else {
+                            pmbot_core::types::ExitReason::StopLoss
+                        },
+                    });
+                }
+            }
+        }
+
+        // Emit exit signals
+        for signal in signals_to_emit {
+            if let Some(order) = self.process_signal(signal) {
+                // Try to send, but don't block if channel is full
+                let _ = self.order_tx.try_send(order);
+            }
+        }
     }
 }
 
@@ -419,6 +647,7 @@ fn default_world() -> WorldState {
         balance: Decimal::new(1_000_000, 0), // large default so tests pass
         daily_pnl: Decimal::ZERO,
         external_prices: HashMap::new(),
+        network_latency: HashMap::new(),
         timestamp: chrono::Utc::now(),
     }
 }
@@ -457,7 +686,10 @@ mod tests {
         let (signal_tx, signal_rx) = mpsc::channel(16);
         let (order_tx, order_rx) = mpsc::channel(16);
         let (exec_tx, exec_rx) = broadcast::channel(16);
-        let actor = RiskActor::new(&test_config(), signal_rx, order_tx, exec_rx);
+        let (position_tx, _position_rx) = tokio::sync::watch::channel(PositionSnapshot { positions: vec![], daily_pnl: Decimal::ZERO });
+        let (_world_tx, world_rx) = tokio::sync::watch::channel(WorldState::default());
+        let (_market_tx, market_rx) = broadcast::channel::<MarketEvent>(16);
+        let actor = RiskActor::new(&test_config(), signal_rx, order_tx, exec_rx, market_rx, position_tx, world_rx);
         (actor, signal_tx, order_rx, exec_tx)
     }
 
@@ -698,7 +930,7 @@ mod tests {
         let signal = Signal::Exit {
             id: SignalId::new(),
             strategy: "test",
-            position_id: PositionId::new(), // doesn't exist
+            signal_id: SignalId::new(), // doesn't exist
             reason: ExitReason::StrategyExit,
         };
         let order = actor.process_signal(signal);
@@ -716,6 +948,7 @@ mod tests {
             balance: dec!(500),
             daily_pnl: dec!(-10),
             external_prices: HashMap::new(),
+            network_latency: HashMap::new(),
             timestamp: chrono::Utc::now(),
         };
         actor.update_world(new_world);
@@ -727,7 +960,10 @@ mod tests {
         let (signal_tx, signal_rx) = mpsc::channel(16);
         let (order_tx, mut order_rx) = mpsc::channel(16);
         let (exec_tx, exec_rx) = broadcast::channel(16);
-        let actor = RiskActor::new(&test_config(), signal_rx, order_tx, exec_rx);
+        let (position_tx, _position_rx) = tokio::sync::watch::channel(PositionSnapshot { positions: vec![], daily_pnl: Decimal::ZERO });
+        let (_world_tx, world_rx) = tokio::sync::watch::channel(WorldState::default());
+        let (_market_tx, market_rx) = broadcast::channel::<MarketEvent>(16);
+        let actor = RiskActor::new(&test_config(), signal_rx, order_tx, exec_rx, market_rx, position_tx, world_rx);
 
         // Spawn actor
         let handle = tokio::spawn(actor.run());

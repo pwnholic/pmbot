@@ -11,12 +11,10 @@ use std::time::{Duration, Instant};
 
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
-use tracing::debug;
+use tracing::{debug, info};
 
 use pmbot_core::messages::{Signal, StrategyMetrics, WorldState};
-use pmbot_core::types::{
-    ExitReason, FillEvent, MarketId, MarketInfo, PositionId, Side, SignalId, Symbol,
-};
+use pmbot_core::types::{ExitReason, FillEvent, MarketId, MarketInfo, Side, SignalId, Symbol};
 
 use crate::traits::Strategy;
 
@@ -39,6 +37,8 @@ enum State {
     InPosition {
         entry_edge: Decimal,
         signal_id: SignalId,
+        entry_price: Decimal,
+        side: Side,
     },
     /// Cooldown after exiting a position.
     Cooldown { until: Instant },
@@ -50,9 +50,7 @@ enum State {
 
 /// Lead-lag strategy implementation.
 ///
-/// Compares external BTC price (from feed) with the prediction market
-/// mid-price. When BTC moves significantly, the strategy expects the
-/// Polymarket price to follow with a lag.
+#[allow(dead_code)]
 pub struct LeadLag {
     /// Minimum relative BTC move to trigger a signal.
     lag_threshold: Decimal,
@@ -70,6 +68,14 @@ pub struct LeadLag {
     anchor_price: Option<Decimal>,
     /// Number of signals generated (for metrics).
     signals_generated: u64,
+    /// Number of trades executed.
+    trades: u64,
+    /// Number of winning trades.
+    wins: u64,
+    /// Number of losing trades.
+    losses: u64,
+    /// Total PnL.
+    total_pnl: Decimal,
 }
 
 impl LeadLag {
@@ -88,6 +94,10 @@ impl LeadLag {
             state: State::Watching,
             anchor_price: None,
             signals_generated: 0,
+            trades: 0,
+            wins: 0,
+            losses: 0,
+            total_pnl: Decimal::ZERO,
         }
     }
 
@@ -115,7 +125,11 @@ impl Strategy for LeadLag {
         };
 
         // Get the first market (our trading target).
-        let (market_id, snap) = match world.active_market_id.as_ref().and_then(|id| world.markets.get(id).map(|snap| (id, snap))) {
+        let (market_id, snap) = match world
+            .active_market_id
+            .as_ref()
+            .and_then(|id| world.markets.get(id).map(|snap| (id, snap)))
+        {
             Some(pair) => pair,
             None => return Vec::new(),
         };
@@ -159,9 +173,12 @@ impl Strategy for LeadLag {
                     if self.entry_delay.is_zero() {
                         let signal_id = SignalId::new();
                         self.signals_generated += 1;
+                        let entry_price = snap.mid_price.unwrap_or(Decimal::ZERO);
                         self.state = State::InPosition {
                             entry_edge: edge,
                             signal_id,
+                            entry_price,
+                            side: direction,
                         };
                         return vec![Signal::Enter {
                             id: signal_id,
@@ -195,10 +212,13 @@ impl Strategy for LeadLag {
                     let edge = *edge;
                     let signal_id = SignalId::new();
                     self.signals_generated += 1;
+                    let entry_price = snap.mid_price.unwrap_or(Decimal::ZERO);
 
                     self.state = State::InPosition {
                         entry_edge: edge,
                         signal_id,
+                        entry_price,
+                        side: direction,
                     };
 
                     vec![Signal::Enter {
@@ -220,6 +240,7 @@ impl Strategy for LeadLag {
             State::InPosition {
                 entry_edge: _,
                 signal_id,
+                ..
             } => {
                 // Check if the BTC move has converged back.
                 if btc_move.abs() < self.exit_convergence {
@@ -256,10 +277,51 @@ impl Strategy for LeadLag {
         }
     }
 
-    fn on_fill(&mut self, _fill: &FillEvent) {
-        // The risk actor manages position tracking; we just note
-        // that our signal was executed.
-        debug!("lead_lag: fill received");
+    fn on_fill(&mut self, fill: &FillEvent) {
+        match &self.state {
+            State::InPosition {
+                signal_id,
+                entry_price,
+                side,
+                ..
+            } => {
+                if fill.signal_id == *signal_id {
+                    // Entry fill
+                    self.trades += 1;
+                    info!(
+                        strategy = "lead_lag",
+                        ?fill.signal_id,
+                        price = %fill.price,
+                        "entry order filled"
+                    );
+                } else {
+                    // Exit fill - calculate PnL
+                    let pnl = match side {
+                        Side::Buy => (fill.price - entry_price) * fill.size,
+                        Side::Sell => (entry_price - fill.price) * fill.size,
+                    };
+
+                    if pnl >= Decimal::ZERO {
+                        self.wins += 1;
+                    } else {
+                        self.losses += 1;
+                    }
+                    self.total_pnl += pnl;
+
+                    info!(
+                        strategy = "lead_lag",
+                        ?fill.signal_id,
+                        pnl = %pnl,
+                        total_trades = self.trades,
+                        wins = self.wins,
+                        losses = self.losses,
+                        total_pnl = %self.total_pnl,
+                        "position closed"
+                    );
+                }
+            }
+            _ => {}
+        }
     }
 
     fn on_market_change(&mut self, _old: &MarketId, _new: &MarketInfo) {
@@ -282,12 +344,19 @@ impl Strategy for LeadLag {
                 }
             }),
             signals_generated: self.signals_generated,
+            trades: 0,
+            wins: 0,
+            losses: 0,
+            total_pnl: Decimal::ZERO,
             custom: vec![
                 (
                     "threshold",
                     format!("{:.2}%", self.lag_threshold * dec!(100)),
                 ),
-                ("anchor", self.anchor_price.map_or("none".into(), |p| p.to_string())),
+                (
+                    "anchor",
+                    self.anchor_price.map_or("none".into(), |p| p.to_string()),
+                ),
             ],
         }
     }
@@ -310,10 +379,7 @@ mod tests {
         Utc.timestamp_opt(1_700_000_000 + secs, 0).unwrap()
     }
 
-    fn make_world(
-        btc_price: Option<Decimal>,
-        market_mid: Option<Decimal>,
-    ) -> WorldState {
+    fn make_world(btc_price: Option<Decimal>, market_mid: Option<Decimal>) -> WorldState {
         let mut external_prices = HashMap::new();
         if let Some(price) = btc_price {
             external_prices.insert(
@@ -373,6 +439,7 @@ mod tests {
             balance: dec!(1000),
             daily_pnl: Decimal::ZERO,
             external_prices,
+            network_latency: HashMap::new(),
             timestamp: ts(0),
         }
     }
@@ -419,9 +486,7 @@ mod tests {
         // With 0ms delay, should immediately enter.
         assert_eq!(signals.len(), 1);
         match &signals[0] {
-            Signal::Enter {
-                strategy, side, ..
-            } => {
+            Signal::Enter { strategy, side, .. } => {
                 assert_eq!(*strategy, "lead_lag");
                 assert_eq!(*side, Side::Buy);
             }
@@ -484,7 +549,9 @@ mod tests {
 
         assert_eq!(signals.len(), 1);
         match &signals[0] {
-            Signal::Exit { strategy, reason, .. } => {
+            Signal::Exit {
+                strategy, reason, ..
+            } => {
                 assert_eq!(*strategy, "lead_lag");
                 assert_eq!(*reason, ExitReason::StrategyExit);
             }

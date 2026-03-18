@@ -21,13 +21,13 @@ struct PaperState {
 
 /// Paper executor that simulates fills against a mock book.
 ///
-/// - Market orders fill immediately at the configured mid price.
+/// - Market orders fill immediately at the current mid price.
 /// - Limit orders fill immediately (simplistic model).
 /// - Generates deterministic fake `OrderId`s.
 #[derive(Debug, Clone)]
 pub struct PaperExecutor {
     state: Arc<Mutex<PaperState>>,
-    mid_price: Decimal,
+    mid_price: Arc<Mutex<Decimal>>,
     /// Will be used when we wire up the SDK for order metadata.
     #[allow(dead_code)]
     market_id: MarketId,
@@ -42,7 +42,7 @@ impl PaperExecutor {
                 open_orders: Vec::new(),
                 next_seq: 1,
             })),
-            mid_price,
+            mid_price: Arc::new(Mutex::new(mid_price)),
             market_id,
         }
     }
@@ -50,6 +50,11 @@ impl PaperExecutor {
     /// Return the current simulated balance.
     pub async fn balance(&self) -> Decimal {
         self.state.lock().await.balance
+    }
+
+    /// Update the mid price used for market order simulation.
+    pub async fn update_mid_price(&self, price: Decimal) {
+        *self.mid_price.lock().await = price;
     }
 
     fn make_order_id(seq: u64) -> OrderId {
@@ -94,8 +99,10 @@ impl OrderExecutor for PaperExecutor {
         side: Side,
         size: Decimal,
     ) -> Result<OrderId> {
+        let mid = *self.mid_price.lock().await;
         let mut state = self.state.lock().await;
-        let cost = self.mid_price * size;
+        // In simulation, we deduct based on the current mid price.
+        let cost = mid * size;
 
         if side == Side::Buy && state.balance < cost {
             anyhow::bail!(

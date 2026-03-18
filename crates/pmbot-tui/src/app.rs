@@ -42,7 +42,7 @@ pub struct App {
     pub logs: VecDeque<LogEntry>,
     /// Maximum number of log entries to retain.
     pub log_buffer_size: usize,
-    /// PnL history for sparkline rendering.
+    /// PnL history (retained for API compatibility).
     pub pnl_history: VecDeque<Decimal>,
     /// Whether the TUI is still running.
     pub running: bool,
@@ -121,6 +121,7 @@ mod tests {
             balance: dec!(1000),
             daily_pnl: dec!(50),
             external_prices: HashMap::new(),
+            network_latency: HashMap::new(),
             timestamp: Utc::now(),
         }
     }
@@ -188,6 +189,10 @@ mod tests {
             state: "active",
             edge: Some(dec!(0.02)),
             signals_generated: 5,
+            trades: 0,
+            wins: 0,
+            losses: 0,
+            total_pnl: rust_decimal::Decimal::ZERO,
             custom: vec![],
         }];
         app.update_metrics(m1);
@@ -199,6 +204,10 @@ mod tests {
                 state: "paused",
                 edge: None,
                 signals_generated: 10,
+                trades: 0,
+                wins: 0,
+                losses: 0,
+                total_pnl: rust_decimal::Decimal::ZERO,
                 custom: vec![],
             },
             StrategyMetrics {
@@ -206,6 +215,10 @@ mod tests {
                 state: "active",
                 edge: Some(dec!(0.01)),
                 signals_generated: 3,
+                trades: 0,
+                wins: 0,
+                losses: 0,
+                total_pnl: rust_decimal::Decimal::ZERO,
                 custom: vec![],
             },
         ];

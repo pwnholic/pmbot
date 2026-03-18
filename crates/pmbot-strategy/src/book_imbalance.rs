@@ -8,12 +8,10 @@
 
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
-use tracing::debug;
+use tracing::{debug, info};
 
 use pmbot_core::messages::{Signal, StrategyMetrics, WorldState};
-use pmbot_core::types::{
-    ExitReason, FillEvent, MarketId, MarketInfo, Side, SignalId,
-};
+use pmbot_core::types::{ExitReason, FillEvent, MarketId, MarketInfo, Side, SignalId};
 
 use crate::traits::Strategy;
 
@@ -29,6 +27,8 @@ enum BookImbalanceState {
     InPosition {
         signal_id: SignalId,
         entry_imbalance: Decimal,
+        entry_price: Decimal,
+        side: Side,
     },
 }
 
@@ -36,11 +36,7 @@ enum BookImbalanceState {
 // BookImbalance
 // ---------------------------------------------------------------------------
 
-/// Book-imbalance strategy.
-///
-/// Enters when the order-book imbalance exceeds a threshold and
-/// recent price momentum confirms the direction. Exits when the
-/// imbalance reverses (crosses zero).
+#[allow(dead_code)]
 pub struct BookImbalance {
     /// Absolute imbalance threshold to trigger entry (e.g., 0.6).
     threshold: Decimal,
@@ -50,11 +46,19 @@ pub struct BookImbalance {
     /// Number of recent price points to check for momentum confirmation.
     momentum_window: usize,
     /// Minimum edge to emit in the signal.
-    min_edge: Decimal,
+    min_activation_edge: Decimal,
     /// Internal state machine.
     state: BookImbalanceState,
     /// Number of signals generated.
     signals_generated: u64,
+    /// Number of trades executed.
+    trades: u64,
+    /// Number of winning trades.
+    wins: u64,
+    /// Number of losing trades.
+    losses: u64,
+    /// Total PnL.
+    total_pnl: Decimal,
 }
 
 impl BookImbalance {
@@ -63,20 +67,24 @@ impl BookImbalance {
     /// - `threshold`: minimum absolute imbalance to trigger (e.g., 0.6)
     /// - `levels`: number of book levels used for imbalance calc
     /// - `momentum_window`: number of price points to confirm trend
-    /// - `min_edge`: minimum edge value for signal emission
+    /// - `min_activation_edge`: minimum edge value for signal emission
     pub fn new(
         threshold: Decimal,
         levels: usize,
         momentum_window: usize,
-        min_edge: Decimal,
+        min_activation_edge: Decimal,
     ) -> Self {
         Self {
             threshold,
             levels,
             momentum_window,
-            min_edge,
+            min_activation_edge,
             state: BookImbalanceState::Watching,
             signals_generated: 0,
+            trades: 0,
+            wins: 0,
+            losses: 0,
+            total_pnl: Decimal::ZERO,
         }
     }
 
@@ -129,7 +137,11 @@ impl Strategy for BookImbalance {
 
     fn evaluate(&mut self, world: &WorldState) -> Vec<Signal> {
         // 1. Get the first market.
-        let (market_id, snap) = match world.active_market_id.as_ref().and_then(|id| world.markets.get(id).map(|snap| (id, snap))) {
+        let (market_id, snap) = match world
+            .active_market_id
+            .as_ref()
+            .and_then(|id| world.markets.get(id).map(|snap| (id, snap)))
+        {
             Some(pair) => pair,
             None => return Vec::new(),
         };
@@ -164,22 +176,21 @@ impl Strategy for BookImbalance {
                 }
 
                 // 4. Confirm momentum from price history.
-                if !Self::momentum_confirms(
-                    &snap.price_history,
-                    self.momentum_window,
-                    direction,
-                ) {
+                if !Self::momentum_confirms(&snap.price_history, self.momentum_window, direction) {
                     debug!("book_imbalance: imbalance detected but momentum does not confirm");
                     return Vec::new();
                 }
 
-                let edge = imbalance.abs().max(self.min_edge);
+                let edge = imbalance.abs().max(self.min_activation_edge);
                 let signal_id = SignalId::new();
                 self.signals_generated += 1;
+                let entry_price = snap.mid_price.unwrap_or(Decimal::ZERO);
 
                 self.state = BookImbalanceState::InPosition {
                     signal_id,
                     entry_imbalance: imbalance,
+                    entry_price,
+                    side: direction,
                 };
 
                 vec![Signal::Enter {
@@ -198,6 +209,7 @@ impl Strategy for BookImbalance {
             BookImbalanceState::InPosition {
                 signal_id,
                 entry_imbalance,
+                ..
             } => {
                 // 5. Exit when imbalance reverses (crosses zero).
                 let reversed = if *entry_imbalance > Decimal::ZERO {
@@ -226,8 +238,51 @@ impl Strategy for BookImbalance {
         }
     }
 
-    fn on_fill(&mut self, _fill: &FillEvent) {
-        debug!("book_imbalance: fill received");
+    fn on_fill(&mut self, fill: &FillEvent) {
+        match &self.state {
+            BookImbalanceState::InPosition {
+                signal_id,
+                entry_price,
+                side,
+                ..
+            } => {
+                if fill.signal_id == *signal_id {
+                    // Entry fill
+                    self.trades += 1;
+                    info!(
+                        strategy = "book_imbalance",
+                        ?fill.signal_id,
+                        price = %fill.price,
+                        "entry order filled"
+                    );
+                } else {
+                    // Exit fill - calculate PnL
+                    let pnl = match side {
+                        Side::Buy => (fill.price - entry_price) * fill.size,
+                        Side::Sell => (entry_price - fill.price) * fill.size,
+                    };
+
+                    if pnl >= Decimal::ZERO {
+                        self.wins += 1;
+                    } else {
+                        self.losses += 1;
+                    }
+                    self.total_pnl += pnl;
+
+                    info!(
+                        strategy = "book_imbalance",
+                        ?fill.signal_id,
+                        pnl = %pnl,
+                        total_trades = self.trades,
+                        wins = self.wins,
+                        losses = self.losses,
+                        total_pnl = %self.total_pnl,
+                        "position closed"
+                    );
+                }
+            }
+            _ => {}
+        }
     }
 
     fn on_market_change(&mut self, _old: &MarketId, _new: &MarketInfo) {
@@ -246,11 +301,12 @@ impl Strategy for BookImbalance {
                 _ => None,
             },
             signals_generated: self.signals_generated,
+            trades: 0,
+            wins: 0,
+            losses: 0,
+            total_pnl: Decimal::ZERO,
             custom: vec![
-                (
-                    "threshold",
-                    format!("{:.2}", self.threshold),
-                ),
+                ("threshold", format!("{:.2}", self.threshold)),
                 ("levels", self.levels.to_string()),
                 ("momentum_window", self.momentum_window.to_string()),
             ],
@@ -337,6 +393,7 @@ mod tests {
             balance: dec!(1000),
             daily_pnl: Decimal::ZERO,
             external_prices: HashMap::new(),
+            network_latency: HashMap::new(),
             timestamp: ts(0),
         }
     }
@@ -371,9 +428,7 @@ mod tests {
 
         assert_eq!(signals.len(), 1);
         match &signals[0] {
-            Signal::Enter {
-                strategy, side, ..
-            } => {
+            Signal::Enter { strategy, side, .. } => {
                 assert_eq!(*strategy, "book_imbalance");
                 assert_eq!(*side, Side::Buy);
             }
@@ -391,9 +446,7 @@ mod tests {
 
         assert_eq!(signals.len(), 1);
         match &signals[0] {
-            Signal::Enter {
-                strategy, side, ..
-            } => {
+            Signal::Enter { strategy, side, .. } => {
                 assert_eq!(*strategy, "book_imbalance");
                 assert_eq!(*side, Side::Sell);
             }

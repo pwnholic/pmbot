@@ -20,7 +20,7 @@ help:
 	@echo "  make run-live STRATEGIES=lead_lag"
 
 # Default strategies
-STRATEGIES ?= lead_lag,fair_value
+STRATEGIES ?= fair_value
 
 build:
 	cargo build --workspace

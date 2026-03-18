@@ -20,7 +20,13 @@ pub enum PositionState {
     },
 
     /// Exit order submitted, awaiting fill.
-    Closing { exit_order_id: OrderId },
+    Closing {
+        exit_order_id: OrderId,
+        entry_price: Decimal,
+        size: Decimal,
+        side: Side,
+        opened_at: DateTime<Utc>,
+    },
 
     /// Position fully closed.
     Closed {
@@ -89,7 +95,9 @@ impl TrackedPosition {
         sl_price: Decimal,
     ) -> Result<(), PositionError> {
         if !matches!(self.state, PositionState::Pending { .. }) {
-            return Err(PositionError::InvalidState("can only open a Pending position"));
+            return Err(PositionError::InvalidState(
+                "can only open a Pending position",
+            ));
         }
         self.state = PositionState::Open {
             entry_price: fill_price,
@@ -108,33 +116,56 @@ impl TrackedPosition {
     ///
     /// # Errors
     /// Returns `PositionError` if the position is not in the Open state.
-    pub fn start_closing(&mut self, exit_order_id: OrderId) -> Result<(Decimal, Side), PositionError> {
-        let (size, side) = match self.state {
-            PositionState::Open { size, side, .. } => (size, side),
-            _ => return Err(PositionError::InvalidState("can only start closing an Open position")),
+    pub fn start_closing(
+        &mut self,
+        exit_order_id: OrderId,
+    ) -> Result<(Decimal, Side), PositionError> {
+        let (entry_price, size, side, opened_at) = match self.state {
+            PositionState::Open {
+                entry_price,
+                size,
+                side,
+                opened_at,
+                ..
+            } => (entry_price, size, side, opened_at),
+            _ => {
+                return Err(PositionError::InvalidState(
+                    "can only start closing an Open position",
+                ));
+            }
         };
-        self.state = PositionState::Closing { exit_order_id };
+        self.state = PositionState::Closing {
+            exit_order_id,
+            entry_price,
+            size,
+            side,
+            opened_at,
+        };
         Ok((size, side))
     }
 
     /// Transition from Closing to Closed when the exit fill arrives.
     ///
-    /// Computes PnL based on the entry/exit prices and side.
+    /// Extracts entry data from the Closing state and computes realized PnL.
+    /// Returns the realized PnL on success.
     ///
     /// # Errors
-    /// Returns `PositionError` if the position is not in the Closing state. Requires that the
-    /// caller has captured the entry data before calling `start_closing`.
-    pub fn close(
-        &mut self,
-        exit_price: Decimal,
-        entry_price: Decimal,
-        size: Decimal,
-        side: Side,
-        opened_at: DateTime<Utc>,
-    ) -> Result<(), PositionError> {
-        if !matches!(self.state, PositionState::Closing { .. }) {
-            return Err(PositionError::InvalidState("can only close a Closing position"));
-        }
+    /// Returns `PositionError` if the position is not in the Closing state.
+    pub fn close(&mut self, exit_price: Decimal) -> Result<Decimal, PositionError> {
+        let (entry_price, size, side, opened_at) = match &self.state {
+            PositionState::Closing {
+                entry_price,
+                size,
+                side,
+                opened_at,
+                ..
+            } => (*entry_price, *size, *side, *opened_at),
+            _ => {
+                return Err(PositionError::InvalidState(
+                    "can only close a Closing position",
+                ));
+            }
+        };
         let pnl = compute_pnl(entry_price, exit_price, size, side);
         let duration = Utc::now() - opened_at;
         self.state = PositionState::Closed {
@@ -143,7 +174,7 @@ impl TrackedPosition {
             pnl,
             duration,
         };
-        Ok(())
+        Ok(pnl)
     }
 
     /// Calculate unrealized PnL for an Open position.
@@ -166,9 +197,7 @@ impl TrackedPosition {
     /// Returns `false` if the position is not Open.
     pub fn should_take_profit(&self, current_price: Decimal) -> bool {
         match &self.state {
-            PositionState::Open {
-                side, tp_price, ..
-            } => match side {
+            PositionState::Open { side, tp_price, .. } => match side {
                 Side::Buy => current_price >= *tp_price,
                 Side::Sell => current_price <= *tp_price,
             },
@@ -181,9 +210,7 @@ impl TrackedPosition {
     /// Returns `false` if the position is not Open.
     pub fn should_stop_loss(&self, current_price: Decimal) -> bool {
         match &self.state {
-            PositionState::Open {
-                side, sl_price, ..
-            } => match side {
+            PositionState::Open { side, sl_price, .. } => match side {
                 Side::Buy => current_price <= *sl_price,
                 Side::Sell => current_price >= *sl_price,
             },
@@ -233,7 +260,7 @@ mod tests {
         let mut pos = make_pending();
         assert!(matches!(pos.state, PositionState::Pending { .. }));
 
-        pos.open(dec!(0.50), dec!(100), Side::Buy, dec!(0.70), dec!(0.35));
+        let _ = pos.open(dec!(0.50), dec!(100), Side::Buy, dec!(0.70), dec!(0.35));
         match &pos.state {
             PositionState::Open {
                 entry_price,
@@ -256,11 +283,10 @@ mod tests {
     #[test]
     fn test_open_to_closing() {
         let mut pos = make_pending();
-        pos.open(dec!(0.50), dec!(100), Side::Buy, dec!(0.70), dec!(0.35));
-
-        pos.start_closing(OrderId("exit-1".into()));
+        let _ = pos.open(dec!(0.50), dec!(100), Side::Buy, dec!(0.70), dec!(0.35));
+        let _ = pos.start_closing(OrderId("exit-1".into()));
         match &pos.state {
-            PositionState::Closing { exit_order_id } => {
+            PositionState::Closing { exit_order_id, .. } => {
                 assert_eq!(exit_order_id.0, "exit-1");
             }
             _ => panic!("expected Closing state"),
@@ -270,11 +296,9 @@ mod tests {
     #[test]
     fn test_closing_to_closed_buy_profit() {
         let mut pos = make_pending();
-        pos.open(dec!(0.50), dec!(100), Side::Buy, dec!(0.70), dec!(0.35));
-        let opened_at = Utc::now();
-
+        let _ = pos.open(dec!(0.50), dec!(100), Side::Buy, dec!(0.70), dec!(0.35));
         pos.start_closing(OrderId("exit-1".into()));
-        pos.close(dec!(0.70), dec!(0.50), dec!(100), Side::Buy, opened_at);
+        let pnl = pos.close(dec!(0.70)).unwrap();
 
         match &pos.state {
             PositionState::Closed {
@@ -295,10 +319,9 @@ mod tests {
     fn test_closing_to_closed_buy_loss() {
         let mut pos = make_pending();
         pos.open(dec!(0.50), dec!(100), Side::Buy, dec!(0.70), dec!(0.35));
-        let opened_at = Utc::now();
 
         pos.start_closing(OrderId("exit-1".into()));
-        pos.close(dec!(0.35), dec!(0.50), dec!(100), Side::Buy, opened_at);
+        let pnl = pos.close(dec!(0.35)).unwrap();
 
         match &pos.state {
             PositionState::Closed { pnl, .. } => {
@@ -312,10 +335,9 @@ mod tests {
     fn test_closing_to_closed_sell_profit() {
         let mut pos = make_pending();
         pos.open(dec!(0.50), dec!(100), Side::Sell, dec!(0.30), dec!(0.65));
-        let opened_at = Utc::now();
 
         pos.start_closing(OrderId("exit-1".into()));
-        pos.close(dec!(0.30), dec!(0.50), dec!(100), Side::Sell, opened_at);
+        let pnl = pos.close(dec!(0.30)).unwrap();
 
         match &pos.state {
             PositionState::Closed { pnl, .. } => {
@@ -329,10 +351,9 @@ mod tests {
     fn test_closing_to_closed_sell_loss() {
         let mut pos = make_pending();
         pos.open(dec!(0.50), dec!(100), Side::Sell, dec!(0.30), dec!(0.65));
-        let opened_at = Utc::now();
 
         pos.start_closing(OrderId("exit-1".into()));
-        pos.close(dec!(0.65), dec!(0.50), dec!(100), Side::Sell, opened_at);
+        let pnl = pos.close(dec!(0.65)).unwrap();
 
         match &pos.state {
             PositionState::Closed { pnl, .. } => {

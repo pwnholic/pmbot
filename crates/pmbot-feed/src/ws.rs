@@ -13,7 +13,7 @@ use tracing::{error, info, warn};
 
 use pmbot_core::types::Symbol;
 
-use crate::actor::RawTradeMessage;
+use crate::actor::{RawFeedMessage, RawFeedMessageTrade};
 
 /// Binance trade event from the WebSocket stream.
 #[derive(Debug, Deserialize)]
@@ -39,7 +39,7 @@ struct CombinedStream {
 /// Sends parsed trades into `trade_tx`; exits cleanly on `shutdown`.
 pub async fn run_binance_ws(
     symbols: &[Symbol],
-    trade_tx: mpsc::Sender<RawTradeMessage>,
+    msg_tx: mpsc::Sender<RawFeedMessage>,
     mut shutdown: broadcast::Receiver<()>,
 ) {
     if symbols.is_empty() {
@@ -62,7 +62,7 @@ pub async fn run_binance_ws(
     loop {
         info!(%url, "connecting to Binance WebSocket");
 
-        match connect_and_stream(&url, &trade_tx, &mut shutdown).await {
+        match connect_and_stream(&url, &msg_tx, &mut shutdown).await {
             Ok(()) => {
                 info!("Binance WebSocket shutting down");
                 return;
@@ -86,7 +86,7 @@ pub async fn run_binance_ws(
 
 async fn connect_and_stream(
     url: &str,
-    trade_tx: &mpsc::Sender<RawTradeMessage>,
+    msg_tx: &mpsc::Sender<RawFeedMessage>,
     shutdown: &mut broadcast::Receiver<()>,
 ) -> Result<()> {
     let (ws_stream, _response) = tokio_tungstenite::connect_async(url)
@@ -96,6 +96,8 @@ async fn connect_and_stream(
     info!("connected to Binance WebSocket");
 
     let (_write, mut read) = ws_stream.split();
+    let mut ping_interval = tokio::time::interval(Duration::from_secs(10));
+    let reqwest_client = reqwest::Client::new();
 
     loop {
         tokio::select! {
@@ -113,7 +115,7 @@ async fn connect_and_stream(
                         match trade {
                             Ok(t) => {
                                 if let Some(msg) = parse_trade(&t) {
-                                    if trade_tx.send(msg).await.is_err() {
+                                    if msg_tx.send(RawFeedMessage::Trade(msg)).await.is_err() {
                                         return Ok(()); // channel closed
                                     }
                                 }
@@ -136,15 +138,32 @@ async fn connect_and_stream(
                     }
                 }
             }
+            _ = ping_interval.tick() => {
+                let start = std::time::Instant::now();
+                // We use REST ping because tokio_tungstenite swallows Pong frames internally.
+                let res = reqwest_client.get("https://api.binance.com/api/v3/ping").send().await;
+                match res {
+                    Ok(_) => {
+                        let latency = start.elapsed();
+                        tracing::info!(latency_ms = latency.as_millis(), "Binance REST ping successful");
+                        if msg_tx.send(RawFeedMessage::Latency(latency)).await.is_err() {
+                            return Ok(());
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(%e, "failed to ping binance rest api");
+                    }
+                }
+            }
         }
     }
 }
 
-fn parse_trade(trade: &BinanceTrade) -> Option<RawTradeMessage> {
+fn parse_trade(trade: &BinanceTrade) -> Option<RawFeedMessageTrade> {
     let price = trade.p.parse::<Decimal>().ok()?;
     let timestamp = Utc.timestamp_millis_opt(trade.trade_time).single()?;
 
-    Some(RawTradeMessage {
+    Some(RawFeedMessageTrade {
         symbol: Symbol(trade.s.clone()),
         price,
         timestamp,

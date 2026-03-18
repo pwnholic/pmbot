@@ -28,6 +28,9 @@ pub enum MarketEvent {
         old: MarketId,
         new: MarketInfo,
     },
+    LatencyUpdate {
+        latency: Duration,
+    },
     Connected,
     Disconnected,
 }
@@ -47,6 +50,9 @@ pub enum FeedEvent {
         symbol: Symbol,
         realized_vol: Decimal,
         window: Duration,
+    },
+    LatencyUpdate {
+        latency: Duration,
     },
 }
 
@@ -163,7 +169,7 @@ pub enum ExecutionEvent {
 
 /// Immutable snapshot of the entire system state at a point in time.
 /// Built every tick by the strategy actor, shared via `Arc`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct WorldState {
     pub active_market_id: Option<MarketId>,
     pub markets: std::collections::HashMap<MarketId, MarketSnapshot>,
@@ -172,6 +178,7 @@ pub struct WorldState {
     pub balance: Decimal,
     pub daily_pnl: Decimal,
     pub external_prices: std::collections::HashMap<Symbol, SpotPrice>,
+    pub network_latency: std::collections::HashMap<&'static str, Duration>,
     pub timestamp: DateTime<Utc>,
 }
 
@@ -202,6 +209,19 @@ pub struct Position {
 }
 
 // ---------------------------------------------------------------------------
+// Risk Actor → Strategy Actor (position updates)
+// ---------------------------------------------------------------------------
+
+/// Sent by the risk actor whenever position state changes, so the strategy
+/// actor can keep its `WorldStateBuilder` in sync.
+#[derive(Debug, Clone)]
+pub struct PositionSnapshot {
+    pub positions: Vec<Position>,
+    /// Realized daily PnL from the circuit breaker + sum of unrealized PnL from open positions.
+    pub daily_pnl: Decimal,
+}
+
+// ---------------------------------------------------------------------------
 // Strategy metrics for TUI
 // ---------------------------------------------------------------------------
 
@@ -211,5 +231,9 @@ pub struct StrategyMetrics {
     pub state: &'static str,
     pub edge: Option<Decimal>,
     pub signals_generated: u64,
+    pub trades: u64,
+    pub wins: u64,
+    pub losses: u64,
+    pub total_pnl: Decimal,
     pub custom: Vec<(&'static str, String)>,
 }

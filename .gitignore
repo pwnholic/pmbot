@@ -24,3 +24,5 @@ encrypted_key.json
 
 # Kill switch
 /tmp/pmbot-kill
+
+logs/

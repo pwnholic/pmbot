@@ -94,6 +94,10 @@ mod tests {
                 state: "idle",
                 edge: None,
                 signals_generated: 0,
+                trades: 0,
+                wins: 0,
+                losses: 0,
+                total_pnl: rust_decimal::Decimal::ZERO,
                 custom: Vec::new(),
             }
         }

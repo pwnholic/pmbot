@@ -44,7 +44,16 @@ pub fn fractional_kelly(
 
     // Cap at max_pct * bankroll
     let cap = max_pct * bankroll;
-    position.min(cap)
+
+    let result = position.min(cap);
+
+    // Apply minimum order size only if there's a valid position
+    // (i.e., if edge > 0 and resulting position > 0)
+    if result > Decimal::ZERO {
+        result.max(Decimal::ONE)
+    } else {
+        result
+    }
 }
 
 #[cfg(test)]

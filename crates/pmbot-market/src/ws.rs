@@ -18,10 +18,6 @@ use pmbot_core::types::{Level, TokenId};
 
 use crate::actor::RawBookMessage;
 
-/// Run a persistent Polymarket WebSocket connection.
-///
-/// Listens for `MarketRotation` events to update its subscription.
-/// Forwards parsed orderbook snapshots to the `book_tx` channel.
 pub async fn run_polymarket_ws(
     mut event_rx: broadcast::Receiver<MarketEvent>,
     book_tx: mpsc::Sender<RawBookMessage>,
@@ -34,6 +30,9 @@ pub async fn run_polymarket_ws(
     
     // Type-erased stream for orderbook updates
     let mut stream: Option<Pin<Box<dyn Stream<Item = anyhow::Result<BookUpdate>> + Send>>> = None;
+    
+    let mut backoff = std::time::Duration::from_secs(1);
+    let mut reconnect_timer: Option<Pin<Box<tokio::time::Sleep>>> = None;
 
     loop {
         tokio::select! {
@@ -49,17 +48,20 @@ pub async fn run_polymarket_ws(
                             if Some(token_id) != current_token.as_ref() {
                                 info!(%token_id, "subscribing to new market orderbook");
                                 current_token = Some(token_id.clone());
+                                reconnect_timer = None;
+                                backoff = std::time::Duration::from_secs(1);
                                 
                                 match U256::from_str(&token_id.0) {
                                     Ok(asset_id) => {
                                         match client.subscribe_orderbook(vec![asset_id]) {
                                             Ok(s) => {
-                                                // Map SDK results to anyhow::Result for easier boxing
                                                 let s = s.map(|res| res.map_err(|e| anyhow::anyhow!(e)));
                                                 stream = Some(Box::pin(s));
                                             }
                                             Err(e) => {
                                                 error!(error = %e, "failed to subscribe to orderbook");
+                                                stream = None;
+                                                reconnect_timer = Some(Box::pin(tokio::time::sleep(backoff)));
                                             }
                                         }
                                     }
@@ -73,6 +75,34 @@ pub async fn run_polymarket_ws(
                     Err(broadcast::error::RecvError::Lagged(_)) => {}
                     Err(broadcast::error::RecvError::Closed) => break,
                     _ => {}
+                }
+            }
+
+            _ = async {
+                if let Some(ref mut timer) = reconnect_timer {
+                    timer.await
+                } else {
+                    futures::future::pending().await
+                }
+            } => {
+                reconnect_timer = None;
+                if let Some(ref token_id) = current_token {
+                    info!(%token_id, "attempting to reconnect to orderbook");
+                    if let Ok(asset_id) = U256::from_str(&token_id.0) {
+                        match client.subscribe_orderbook(vec![asset_id]) {
+                            Ok(s) => {
+                                let s = s.map(|res| res.map_err(|e| anyhow::anyhow!(e)));
+                                stream = Some(Box::pin(s));
+                                backoff = std::time::Duration::from_secs(1);
+                                info!("successfully reconnected to orderbook");
+                            }
+                            Err(e) => {
+                                error!(error = %e, "reconnect failed");
+                                backoff = (backoff * 2).min(std::time::Duration::from_secs(60));
+                                reconnect_timer = Some(Box::pin(tokio::time::sleep(backoff)));
+                            }
+                        }
+                    }
                 }
             }
 
@@ -103,11 +133,13 @@ pub async fn run_polymarket_ws(
                         Err(e) => {
                             warn!(error = %e, "Polymarket WS stream error");
                             stream = None; 
+                            reconnect_timer = Some(Box::pin(tokio::time::sleep(backoff)));
                         }
                     }
                 } else {
                     warn!("Polymarket WS stream ended unexpectedly");
                     stream = None;
+                    reconnect_timer = Some(Box::pin(tokio::time::sleep(backoff)));
                 }
             }
         }

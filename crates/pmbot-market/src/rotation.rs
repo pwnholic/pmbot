@@ -64,11 +64,13 @@ impl MarketRotator {
     }
 
     /// True if the current market has expired or is ending soon enough to rotate.
+    /// Also returns true if no market is set, or if the current market has no
+    /// end_date (unsafe for time-bounded trading).
     pub fn should_rotate(&self) -> bool {
         match self.time_to_expiry() {
             Some(tte) => tte.is_zero() || tte.as_secs() < self.no_trade_zone_secs,
-            // No market set => should discover/rotate
-            None => self.current_market.is_none(),
+            // No market set OR market has no end_date => should rotate
+            None => true,
         }
     }
 
@@ -185,8 +187,8 @@ mod tests {
 
         assert!(rotator.time_to_expiry().is_none());
         assert!(!rotator.in_no_trade_zone());
-        // has a market but no end_date => time_to_expiry is None, not "no market"
-        assert!(!rotator.should_rotate());
+        // has a market but no end_date => unsafe for time-bounded trading, should rotate
+        assert!(rotator.should_rotate());
         assert!(!rotator.needs_presubscribe());
     }
 }

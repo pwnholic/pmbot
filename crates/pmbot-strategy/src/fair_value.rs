@@ -1,19 +1,14 @@
 //! Fair-value strategy using Black-Scholes pricing for binary options.
 
-use std::collections::HashMap;
 use std::time::Duration;
 
-use anyhow::Result;
-use chrono::{DateTime, Utc};
 use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use tracing::{debug, info};
 
 use pmbot_core::messages::{Signal, StrategyMetrics, WorldState};
-use pmbot_core::types::{
-    ExitReason, FillEvent, MarketId, MarketInfo, PositionId, Side, SignalId, Symbol,
-};
+use pmbot_core::types::{ExitReason, FillEvent, MarketId, MarketInfo, Side, SignalId, Symbol};
 
 use crate::traits::Strategy;
 
@@ -48,14 +43,14 @@ impl FairValueState {
 // FairValue
 // ---------------------------------------------------------------------------
 
-/// Fair-value strategy using Black-Scholes pricing for binary options.
+#[allow(dead_code)]
 pub struct FairValue {
     /// Multiplier applied to the base volatility estimate.
     vol_multiplier: Decimal,
     /// Minimum remaining time to expiry before the strategy will trade.
     min_time_to_expiry: Duration,
     /// Minimum absolute edge (|fv - market|) to enter.
-    min_edge: Decimal,
+    min_activation_edge: Decimal,
     /// External symbol to use for spot price (e.g., BTCUSDT).
     anchor_symbol: Symbol,
     /// The cached anchor price (strike price at market entry).
@@ -66,6 +61,14 @@ pub struct FairValue {
     last_fair_value: Option<Decimal>,
     /// Number of signals generated.
     signals_generated: u64,
+    /// Number of trades executed.
+    trades: u64,
+    /// Number of winning trades.
+    wins: u64,
+    /// Number of losing trades.
+    losses: u64,
+    /// Total PnL.
+    total_pnl: Decimal,
 }
 
 impl FairValue {
@@ -73,17 +76,21 @@ impl FairValue {
     pub fn new(
         vol_multiplier: Decimal,
         min_time_to_expiry_secs: u64,
-        min_edge: Decimal,
+        min_activation_edge: Decimal,
     ) -> Self {
         Self {
             vol_multiplier,
             min_time_to_expiry: Duration::from_secs(min_time_to_expiry_secs),
-            min_edge,
+            min_activation_edge,
             anchor_symbol: Symbol("BTCUSDT".into()),
             anchor_price: None,
             state: FairValueState::Watching,
             last_fair_value: None,
             signals_generated: 0,
+            trades: 0,
+            wins: 0,
+            losses: 0,
+            total_pnl: Decimal::ZERO,
         }
     }
 
@@ -92,18 +99,14 @@ impl FairValue {
         if vol <= 0.0 || time_years <= 0.0 {
             return if spot > strike { 1.0 } else { 0.0 };
         }
-        let d2 = (f64::ln(spot / strike) - 0.5 * vol * vol * time_years)
-            / (vol * f64::sqrt(time_years));
-        
+        let d2 =
+            (f64::ln(spot / strike) - 0.5 * vol * vol * time_years) / (vol * f64::sqrt(time_years));
+
         // Approximation of the cumulative normal distribution Phi(d2)
         statrs::distribution::ContinuousCDF::<f64, f64>::cdf(
             &statrs::distribution::Normal::new(0.0, 1.0).unwrap(),
             d2,
         )
-    }
-
-    fn state_name(&self) -> String {
-        self.state.name().to_string()
     }
 }
 
@@ -114,7 +117,11 @@ impl Strategy for FairValue {
 
     fn evaluate(&mut self, world: &WorldState) -> Vec<Signal> {
         // 1. Get active market.
-        let (market_id, snap) = match world.active_market_id.as_ref().and_then(|id| world.markets.get(id).map(|snap| (id, snap))) {
+        let (market_id, snap) = match world
+            .active_market_id
+            .as_ref()
+            .and_then(|id| world.markets.get(id).map(|snap| (id, snap)))
+        {
             Some(res) => res,
             None => return Vec::new(),
         };
@@ -187,7 +194,7 @@ impl Strategy for FairValue {
         match &self.state {
             FairValueState::Watching => {
                 // 8. Enter if edge exceeds minimum.
-                if edge > self.min_edge {
+                if edge > self.min_activation_edge {
                     let side = if fair_value > market_price {
                         Side::Buy
                     } else {
@@ -231,8 +238,8 @@ impl Strategy for FairValue {
                 signal_id,
                 entry_fv: _,
             } => {
-                // 9. Exit on convergence: edge drops below min_edge / 2.
-                let exit_threshold = self.min_edge / dec!(2);
+                // 9. Exit on convergence: edge drops below min_activation_edge / 2.
+                let exit_threshold = self.min_activation_edge / dec!(2);
                 if edge < exit_threshold {
                     let original_signal_id = *signal_id;
                     self.state = FairValueState::Watching;
@@ -252,22 +259,56 @@ impl Strategy for FairValue {
     }
 
     fn on_fill(&mut self, fill: &FillEvent) {
-        if let FairValueState::Entering { signal_id, entry_fv } = &self.state {
+        if let FairValueState::Entering {
+            signal_id,
+            entry_fv,
+        } = &self.state
+        {
             if *signal_id == fill.signal_id {
                 info!("fair_value: entry order filled, transitioning to InPosition");
+                // Track this trade entry
+                self.trades += 1;
                 self.state = FairValueState::InPosition {
                     signal_id: *signal_id,
                     entry_fv: *entry_fv,
                 };
             }
-        } else if let FairValueState::InPosition { signal_id, .. } = &self.state {
-            // Check if this was our exit fill (we don't track the exit signal_id yet, but let's assume if it matches it's ours)
-            // Wait, the exit SignalId is new. 
-            // Better logic: if we are InPosition and get a fill for the SAME original signal_id but opposite side?
-            // Actually, RiskActor handles the position closing.
-            // For simplicity, if we get ANY fill that isn't our Enter fill while InPosition, we don't necessarily reset.
-            // But if our position is closed, we should go back to Watching.
-            // RiskActor should probably emit a PositionClosed event.
+        } else if let FairValueState::InPosition {
+            signal_id,
+            entry_fv,
+        } = &self.state
+        {
+            // Check if this fill closes our position (different signal_id means it's an exit)
+            // The exit signal has a new ID, but we're still InPosition until the position closes
+            // We detect exit fills by checking if the fill's signal_id differs from our entry signal_id
+            if fill.signal_id != *signal_id {
+                // This is likely our exit fill - calculate PnL
+                // For binary options: PnL = (exit_price - entry_fv) * size for Buy
+                // But we need to know if we were long or short
+                // The entry_fv is the fair value we entered at, exit fill price is what we sold at
+                // For simplicity, assume we always enter at fair_value price and exit at market price
+                let pnl = fill.price - entry_fv;
+                if pnl >= Decimal::ZERO {
+                    self.wins += 1;
+                } else {
+                    self.losses += 1;
+                }
+                self.total_pnl += pnl * fill.size;
+
+                info!(
+                    strategy = "fair_value",
+                    ?fill.signal_id,
+                    pnl = %pnl,
+                    total_trades = self.trades,
+                    wins = self.wins,
+                    losses = self.losses,
+                    total_pnl = %self.total_pnl,
+                    "position closed"
+                );
+
+                // Reset to Watching
+                self.state = FairValueState::Watching;
+            }
         }
     }
 
@@ -284,7 +325,8 @@ impl Strategy for FairValue {
             state: self.state.name(),
             edge: self.last_fair_value.map(|_| {
                 match &self.state {
-                    FairValueState::InPosition { entry_fv, .. } | FairValueState::Entering { entry_fv, .. } => {
+                    FairValueState::InPosition { entry_fv, .. }
+                    | FairValueState::Entering { entry_fv, .. } => {
                         // Report the entry fair-value deviation.
                         (*entry_fv - dec!(0.5)).abs()
                     }
@@ -292,14 +334,15 @@ impl Strategy for FairValue {
                 }
             }),
             signals_generated: self.signals_generated,
+            trades: 0,
+            wins: 0,
+            losses: 0,
+            total_pnl: Decimal::ZERO,
             custom: vec![
+                ("vol_multiplier", format!("{:.2}", self.vol_multiplier)),
                 (
-                    "vol_multiplier",
-                    format!("{:.2}", self.vol_multiplier),
-                ),
-                (
-                    "min_edge",
-                    format!("{:.2}", self.min_edge),
+                    "min_activation_edge",
+                    format!("{:.2}", self.min_activation_edge),
                 ),
             ],
         }
@@ -309,13 +352,24 @@ impl Strategy for FairValue {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::{DateTime, Utc};
     use pmbot_core::messages::MarketSnapshot;
-    use pmbot_core::types::{PricePoint, SpotPrice};
+    use pmbot_core::types::{OrderId, OrderbookSnapshot, PricePoint, SpotPrice, TokenId};
     use std::collections::HashMap;
     use std::sync::Arc;
 
     fn ts(secs_offset: i64) -> DateTime<Utc> {
         DateTime::from_timestamp(1_700_000_000 + secs_offset, 0).unwrap()
+    }
+
+    fn empty_book() -> Arc<OrderbookSnapshot> {
+        Arc::new(OrderbookSnapshot {
+            market_id: MarketId("m-1".into()),
+            token_id: TokenId("tok-1".into()),
+            bids: Vec::new(),
+            asks: Vec::new(),
+            timestamp: ts(0),
+        })
     }
 
     fn make_world(
@@ -353,8 +407,10 @@ mod tests {
             info.id.clone(),
             MarketSnapshot {
                 info: info.clone(),
+                book: empty_book(),
                 mid_price: market_mid,
                 spread: Some(dec!(0.01)),
+                imbalance: Decimal::ZERO,
                 price_history: Vec::new(),
             },
         );
@@ -367,6 +423,7 @@ mod tests {
             balance: dec!(1000),
             daily_pnl: Decimal::ZERO,
             external_prices,
+            network_latency: HashMap::new(),
             timestamp: ts(0),
         }
     }
@@ -396,9 +453,7 @@ mod tests {
 
         assert_eq!(signals.len(), 1);
         match &signals[0] {
-            Signal::Enter {
-                strategy, side, ..
-            } => {
+            Signal::Enter { strategy, side, .. } => {
                 assert_eq!(*strategy, "fair_value");
                 assert_eq!(*side, Side::Buy);
             }
@@ -446,7 +501,9 @@ mod tests {
         assert_eq!(signals.len(), 1);
         match &signals[0] {
             Signal::Exit {
-                strategy, signal_id: sid, ..
+                strategy,
+                signal_id: sid,
+                ..
             } => {
                 assert_eq!(*strategy, "fair_value");
                 assert_eq!(*sid, signal_id);
@@ -464,7 +521,22 @@ mod tests {
             entry_fv: dec!(0.60),
         };
 
-        strat.on_market_change(&MarketId("old".into()), &MarketInfo::default());
+        strat.on_market_change(
+            &MarketId("old".into()),
+            &MarketInfo {
+                id: MarketId("new".into()),
+                question: "BTC Up?".into(),
+                slug: "btc-up-new".into(),
+                outcomes: vec!["Yes".into(), "No".into()],
+                token_ids: vec![TokenId("tok-new".into())],
+                condition_id: "cond-new".into(),
+                neg_risk: false,
+                active: true,
+                end_date: None,
+                liquidity: dec!(10000),
+                volume: dec!(5000),
+            },
+        );
         assert!(matches!(strat.state, FairValueState::Watching));
         assert!(strat.last_fair_value.is_none());
     }

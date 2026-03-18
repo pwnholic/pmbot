@@ -11,11 +11,11 @@
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
-use tracing::debug;
+use tracing::{debug, info};
 
 use pmbot_core::messages::{Signal, StrategyMetrics, WorldState};
 use pmbot_core::types::{
-    ExitReason, FillEvent, MarketId, MarketInfo, PositionId, Side, SignalId,
+    ExitReason, FillEvent, MarketId, MarketInfo, Side, SignalId,
 };
 
 use crate::traits::Strategy;
@@ -32,6 +32,7 @@ enum ConvergenceState {
     InPosition {
         signal_id: SignalId,
         market_id: MarketId,
+        entry_price: Decimal,
     },
 }
 
@@ -39,21 +40,26 @@ enum ConvergenceState {
 // Convergence
 // ---------------------------------------------------------------------------
 
-/// Near-expiry convergence strategy.
-///
-/// Buys outcomes with high probability when close to expiry, expecting
-/// them to converge to 1.0.
+#[allow(dead_code)]
 pub struct Convergence {
     /// Minimum mid-price to consider (e.g., 0.90).
     min_probability: Decimal,
     /// Maximum seconds to expiry to trade (e.g., 300).
     max_time_to_expiry_secs: i64,
     /// Minimum edge (1.0 - price) required to enter.
-    min_edge: Decimal,
+    min_activation_edge: Decimal,
     /// Internal state machine.
     state: ConvergenceState,
     /// Number of signals generated (for metrics).
     signals_generated: u64,
+    /// Number of trades executed.
+    trades: u64,
+    /// Number of winning trades.
+    wins: u64,
+    /// Number of losing trades.
+    losses: u64,
+    /// Total PnL.
+    total_pnl: Decimal,
 }
 
 impl Convergence {
@@ -61,18 +67,22 @@ impl Convergence {
     ///
     /// - `min_probability`: minimum mid-price threshold (e.g., 0.90)
     /// - `max_time_to_expiry_secs`: max seconds before expiry to trade
-    /// - `min_edge`: minimum edge (1.0 - price) to enter
+    /// - `min_activation_edge`: minimum edge (1.0 - price) to enter
     pub fn new(
         min_probability: Decimal,
         max_time_to_expiry_secs: i64,
-        min_edge: Decimal,
+        min_activation_edge: Decimal,
     ) -> Self {
         Self {
             min_probability,
             max_time_to_expiry_secs,
-            min_edge,
+            min_activation_edge,
             state: ConvergenceState::Scanning,
             signals_generated: 0,
+            trades: 0,
+            wins: 0,
+            losses: 0,
+            total_pnl: Decimal::ZERO,
         }
     }
 
@@ -124,7 +134,7 @@ impl Strategy for Convergence {
                     }
 
                     let edge = Decimal::ONE - mid;
-                    if edge < self.min_edge {
+                    if edge < self.min_activation_edge {
                         continue;
                     }
 
@@ -139,6 +149,7 @@ impl Strategy for Convergence {
                     self.state = ConvergenceState::InPosition {
                         signal_id,
                         market_id: market_id.clone(),
+                        entry_price: mid,
                     };
 
                     debug!(
@@ -167,6 +178,7 @@ impl Strategy for Convergence {
             ConvergenceState::InPosition {
                 signal_id,
                 market_id,
+                ..
             } => {
                 // Check if thesis is broken: mid_price dropped significantly.
                 if let Some(snap) = world.markets.get(market_id)
@@ -197,8 +209,47 @@ impl Strategy for Convergence {
         }
     }
 
-    fn on_fill(&mut self, _fill: &FillEvent) {
-        debug!("convergence: fill received");
+    fn on_fill(&mut self, fill: &FillEvent) {
+        match &self.state {
+            ConvergenceState::InPosition {
+                signal_id,
+                entry_price,
+                ..
+            } => {
+                if fill.signal_id == *signal_id {
+                    // Entry fill
+                    self.trades += 1;
+                    info!(
+                        strategy = "convergence",
+                        ?fill.signal_id,
+                        price = %fill.price,
+                        "entry order filled"
+                    );
+                } else {
+                    // Exit fill - calculate PnL (convergence always buys)
+                    let pnl = (fill.price - entry_price) * fill.size;
+                    
+                    if pnl >= Decimal::ZERO {
+                        self.wins += 1;
+                    } else {
+                        self.losses += 1;
+                    }
+                    self.total_pnl += pnl;
+                    
+                    info!(
+                        strategy = "convergence",
+                        ?fill.signal_id,
+                        pnl = %pnl,
+                        total_trades = self.trades,
+                        wins = self.wins,
+                        losses = self.losses,
+                        total_pnl = %self.total_pnl,
+                        "position closed"
+                    );
+                }
+            }
+            _ => {}
+        }
     }
 
     fn on_market_change(&mut self, _old: &MarketId, _new: &MarketInfo) {
@@ -215,6 +266,10 @@ impl Strategy for Convergence {
                 _ => None,
             },
             signals_generated: self.signals_generated,
+            trades: 0,
+            wins: 0,
+            losses: 0,
+            total_pnl: Decimal::ZERO,
             custom: vec![
                 (
                     "min_prob",
@@ -306,6 +361,7 @@ mod tests {
             balance: dec!(1000),
             daily_pnl: Decimal::ZERO,
             external_prices: HashMap::new(),
+            network_latency: HashMap::new(),
             timestamp: ts(now_secs),
         }
     }
@@ -340,7 +396,7 @@ mod tests {
     #[test]
     fn test_enter_on_high_prob_near_expiry() {
         let mut strat = Convergence::new(dec!(0.90), 300, dec!(0.02));
-        // Mid = 0.95, expires in 200s, edge = 0.05 > 0.02 min_edge
+        // Mid = 0.95, expires in 200s, edge = 0.05 > 0.02 min_activation_edge
         let world = make_convergence_world(dec!(0.95), Some(200), 0);
         let signals = strat.evaluate(&world);
 
@@ -363,7 +419,7 @@ mod tests {
     #[test]
     fn test_no_signal_when_edge_too_small() {
         let mut strat = Convergence::new(dec!(0.90), 300, dec!(0.02));
-        // Mid = 0.99, edge = 0.01 < 0.02 min_edge
+        // Mid = 0.99, edge = 0.01 < 0.02 min_activation_edge
         let world = make_convergence_world(dec!(0.99), Some(200), 0);
         let signals = strat.evaluate(&world);
         assert!(signals.is_empty());

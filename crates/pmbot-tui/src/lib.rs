@@ -7,7 +7,11 @@
 
 pub mod app;
 pub mod layout;
+pub mod run;
+pub mod theme;
+pub mod ui;
 pub mod widgets;
 
 pub use app::{App, LogEntry, LogLevel};
 pub use layout::AppLayout;
+pub use ui::draw;

@@ -1,23 +1,20 @@
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 use std::collections::VecDeque;
 
 use crate::app::{LogEntry, LogLevel};
+use crate::theme;
 
 /// Widget that renders a scrolling log panel.
-///
-/// Each entry is formatted as `HH:MM:SS [LEVEL] message`
-/// and color-coded by severity level.
 pub struct LogWidget<'a> {
     entries: &'a VecDeque<LogEntry>,
     max_lines: usize,
 }
 
 impl<'a> LogWidget<'a> {
-    /// Create a new log widget from a deque of entries.
     pub fn new(entries: &'a VecDeque<LogEntry>) -> Self {
         Self {
             entries,
@@ -25,23 +22,20 @@ impl<'a> LogWidget<'a> {
         }
     }
 
-    /// Set the maximum number of lines to display.
     pub fn max_lines(mut self, n: usize) -> Self {
         self.max_lines = n;
         self
     }
 
-    /// Map a log level to its display color.
-    fn level_color(level: LogLevel) -> Color {
+    fn level_color(level: LogLevel) -> ratatui::style::Color {
         match level {
-            LogLevel::Info => Color::White,
-            LogLevel::Warn => Color::Yellow,
-            LogLevel::Error => Color::Red,
-            LogLevel::Trade => Color::Cyan,
+            LogLevel::Info => theme::FG_DIM,
+            LogLevel::Warn => theme::YELLOW,
+            LogLevel::Error => theme::RED,
+            LogLevel::Trade => theme::GREEN,
         }
     }
 
-    /// Map a log level to its display tag.
     fn level_tag(level: LogLevel) -> &'static str {
         match level {
             LogLevel::Info => "INFO ",
@@ -54,7 +48,12 @@ impl<'a> LogWidget<'a> {
 
 impl Widget for LogWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let block = Block::default().title(" Log ").borders(Borders::ALL);
+        let block = Block::default()
+            .title(" Log ")
+            .title_style(theme::title_style())
+            .borders(Borders::ALL)
+            .border_style(theme::border_style())
+            .style(Style::default().bg(theme::BG_DARK));
         let inner = block.inner(area);
         block.render(area, buf);
 
@@ -68,11 +67,11 @@ impl Widget for LogWidget<'_> {
                 let color = Self::level_color(entry.level);
                 let tag = Self::level_tag(entry.level);
                 Line::from(vec![
-                    Span::styled(ts, Style::default().fg(Color::DarkGray)),
-                    Span::raw(" ["),
+                    Span::styled(ts, theme::label()),
+                    Span::styled(" [", Style::default().fg(theme::FG_DIM)),
                     Span::styled(tag, Style::default().fg(color)),
-                    Span::raw("] "),
-                    Span::raw(entry.message.clone()),
+                    Span::styled("] ", Style::default().fg(theme::FG_DIM)),
+                    Span::styled(entry.message.clone(), theme::value()),
                 ])
             })
             .collect();

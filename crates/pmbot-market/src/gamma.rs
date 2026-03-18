@@ -30,6 +30,7 @@ impl GammaDiscovery {
     ///
     /// We generate slugs for the current window plus several upcoming windows
     /// to ensure we always have tradeable markets queued up.
+    /// Does NOT include past boundary slugs to avoid re-selecting expired markets.
     fn generate_btc_5m_slugs(lookahead_windows: usize) -> Vec<String> {
         let now = chrono::Utc::now().timestamp() as u64;
         let boundary_secs = 300u64; // 5 minutes
@@ -39,20 +40,10 @@ impl GammaDiscovery {
 
         let mut slugs = Vec::new();
 
-        // Include 1 past window (might still be open/tradeable) + current + lookahead
-        for i in 0..=(lookahead_windows + 1) {
+        // Current window + lookahead windows (no past boundaries)
+        for i in 0..=(lookahead_windows) {
             let ts = current_boundary + (i as u64 * boundary_secs);
-            // Also include the boundary that started before now
-            if i == 0 {
-                // The window that is currently in-progress
-                slugs.push(format!("btc-updown-5m-{ts}"));
-                // Also the previous one (might still be accepting orders near the end)
-                if current_boundary >= boundary_secs {
-                    slugs.push(format!("btc-updown-5m-{}", current_boundary - boundary_secs));
-                }
-            } else {
-                slugs.push(format!("btc-updown-5m-{ts}"));
-            }
+            slugs.push(format!("btc-updown-5m-{ts}"));
         }
 
         slugs

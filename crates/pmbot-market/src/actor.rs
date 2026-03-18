@@ -1,13 +1,14 @@
 use std::sync::Arc;
 
 use anyhow::Result;
+use chrono::Utc;
 use rust_decimal::Decimal;
 use tokio::sync::{broadcast, mpsc};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use pmbot_core::config::MarketConfig;
 use pmbot_core::messages::MarketEvent;
-use pmbot_core::types::{Level, MarketId, OrderbookSnapshot, TokenId};
+use pmbot_core::types::{Level, MarketId, MarketInfo, OrderbookSnapshot, TokenId};
 
 use crate::book::LocalBook;
 use crate::discovery::{DiscoveryFilters, MarketDiscovery};
@@ -88,17 +89,19 @@ impl MarketActor {
             active_only: true,
         };
 
-        let markets = discovery.discover(&filters).await?;
+        let raw_markets = discovery.discover(&filters).await?;
+        let markets = self.viable_markets(raw_markets);
 
         if markets.is_empty() {
-            warn!("no markets available matching filters");
-            return Err(anyhow::anyhow!("no markets available"));
+            warn!("no viable markets available matching filters (all expired or missing end_date)");
+            return Err(anyhow::anyhow!("no viable markets available"));
         }
 
-        // Pick the market with the highest liquidity
+        // Pick the market with the nearest expiry (for time-bounded strategies like 5min markets)
+        // This ensures we trade the market that will expire soonest, maximizing edge
         let best = markets
             .into_iter()
-            .max_by_key(|m| m.liquidity)
+            .min_by_key(|m| m.end_date.unwrap_or(chrono::DateTime::UNIX_EPOCH))
             .unwrap();
 
         info!(
@@ -119,17 +122,32 @@ impl MarketActor {
         self.book = LocalBook::new(best.id.clone(), token_id);
         self.rotator.set_current(best);
 
-        // Emit Connected event
         let _ = self.events_tx.send(MarketEvent::Connected);
 
         let mut discovery_interval = tokio::time::interval(std::time::Duration::from_secs(self.config.discovery_interval_secs));
+        let mut ping_interval = tokio::time::interval(std::time::Duration::from_secs(10));
+        // Fast expiry check — detects expired market between discovery ticks
+        let mut expiry_check_interval = tokio::time::interval(std::time::Duration::from_secs(1));
+        let mut rotation_pending = false;
+        let reqwest_client = reqwest::Client::new();
 
         // Step 2: Process book messages
         loop {
             tokio::select! {
+                _ = expiry_check_interval.tick() => {
+                    // Quick check: if current market is expired/expiring, flag for
+                    // immediate rotation on the next discovery tick.
+                    if self.rotator.should_rotate() && !rotation_pending {
+                        info!("expiry check: current market expired or expiring, triggering rotation");
+                        rotation_pending = true;
+                        // Reset discovery interval so it fires immediately
+                        discovery_interval.reset();
+                    }
+                }
                 _ = discovery_interval.tick() => {
                     // Check rotation
-                    if self.rotator.should_rotate() {
+                    if self.rotator.should_rotate() || rotation_pending {
+                        rotation_pending = false;
                         info!("market rotation needed");
                         let filters = crate::discovery::DiscoveryFilters {
                             min_liquidity: rust_decimal::Decimal::from(self.config.min_liquidity),
@@ -140,12 +158,26 @@ impl MarketActor {
                             active_only: true,
                         };
                         match discovery.discover(&filters).await {
-                            Ok(mut markets) => {
-                                // Find the most liquid active market
-                                markets.sort_by(|a, b| b.liquidity.cmp(&a.liquidity));
-                                if let Some(new_market) = markets.into_iter().find(|m| m.active && m.liquidity > rust_decimal::Decimal::ZERO) {
+                            Ok(raw_markets) => {
+                                // Filter to viable (non-expired, with end_date) markets
+                                let mut viable = self.viable_markets(raw_markets);
+                                // Sort by time-to-expiry ascending (nearest expiry first)
+                                viable.sort_by(|a, b| {
+                                    let a_tte = a.end_date.map(|d| d.timestamp()).unwrap_or(i64::MAX);
+                                    let b_tte = b.end_date.map(|d| d.timestamp()).unwrap_or(i64::MAX);
+                                    a_tte.cmp(&b_tte)
+                                });
+
+                                if let Some(new_market) = viable.into_iter().next() {
                                     let old_market = self.rotator.current_market().cloned();
                                     
+                                    info!(
+                                        slug = %new_market.slug,
+                                        end_date = ?new_market.end_date,
+                                        liquidity = %new_market.liquidity,
+                                        "rotating to new market"
+                                    );
+
                                     // Initialize new book
                                     let token_id = new_market.token_ids.first().cloned().unwrap_or(pmbot_core::types::TokenId("unknown".into()));
                                     self.book = crate::book::LocalBook::new(new_market.id.clone(), token_id);
@@ -157,11 +189,28 @@ impl MarketActor {
                                             new: new_market,
                                         });
                                     }
+                                } else {
+                                    warn!("rotation needed but no viable markets found — will retry next tick");
                                 }
                             }
                             Err(e) => {
                                 warn!(%e, "failed to discover new market during rotation");
                             }
+                        }
+                    }
+                }
+                _ = ping_interval.tick() => {
+                    let start = std::time::Instant::now();
+                    // We just do a lightweight HEAD or GET to the polymarket time endpoint
+                    let res = reqwest_client.get("https://clob.polymarket.com/time").send().await;
+                    match res {
+                        Ok(_) => {
+                            let latency = start.elapsed();
+                            let _ = self.events_tx.send(MarketEvent::LatencyUpdate { latency });
+                        }
+                        Err(e) => {
+                            // Suppress verbose network errors here to avoid spam, just warn once
+                            warn!(%e, "failed to ping polymarket clob api");
                         }
                     }
                 }
@@ -237,6 +286,42 @@ impl MarketActor {
     /// Get the market rotator.
     pub fn rotator(&self) -> &MarketRotator {
         &self.rotator
+    }
+
+    /// Filter markets to only those with enough time remaining to trade.
+    /// Rejects markets that are expired, expiring within no_trade_zone_secs,
+    /// or missing an end_date entirely (unsafe for time-bounded trading).
+    fn viable_markets(&self, markets: Vec<MarketInfo>) -> Vec<MarketInfo> {
+        let now = Utc::now();
+        let cutoff = chrono::Duration::seconds(self.config.no_trade_zone_secs as i64);
+
+        markets
+            .into_iter()
+            .filter(|m| {
+                if !m.active || m.liquidity <= Decimal::ZERO {
+                    debug!(slug = %m.slug, "skipping inactive/zero-liquidity market");
+                    return false;
+                }
+                match m.end_date {
+                    Some(end) => {
+                        if end <= now + cutoff {
+                            debug!(
+                                slug = %m.slug,
+                                end_date = %end,
+                                "skipping expired/expiring market"
+                            );
+                            false
+                        } else {
+                            true
+                        }
+                    }
+                    None => {
+                        debug!(slug = %m.slug, "skipping market with no end_date");
+                        false
+                    }
+                }
+            })
+            .collect()
     }
 }
 

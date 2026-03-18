@@ -3,69 +3,70 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 /// Computed layout areas for the TUI dashboard.
 ///
 /// ```text
-/// +-- Market ----------------+-- Strategy -------------+
-/// |                          |                         |
-/// +-- Orderbook -------------+-- Positions ------------+
-/// |                          |                         |
-/// +-- Risk / PnL ------------+                         |
-/// |                          |                         |
-/// +-- Log ---------------------------------------------|
-/// |                                                    |
-/// +----------------------------------------------------+
+/// +-- Market -----------+-- PnL ------------+
+/// |  (compact)           |                   |
+/// +---------------------+--------------------+
+/// +-- Orderbook --------+-- Positions -------+
+/// |                     |                    |
+/// |                     |                    |
+/// +---------------------+--------------------+
+/// +-- Log --------------+-- Strategy --------+
+/// |                     |                    |
+/// +---------------------+--------------------+
 /// ```
 pub struct AppLayout {
     /// Market info panel (top-left).
     pub market_info: Rect,
-    /// Strategy metrics panel (top-right).
+    /// Strategy metrics panel (bottom-right).
     pub strategy_panel: Rect,
+    /// Risk / PnL panel (top-right).
+    pub risk_panel: Rect,
     /// Orderbook depth panel (middle-left).
     pub orderbook: Rect,
     /// Positions table (middle-right).
     pub positions: Rect,
-    /// Risk / PnL sparkline panel (below orderbook).
-    pub risk_panel: Rect,
-    /// Scrolling log panel (bottom, full width).
+    /// Scrolling log panel (bottom-left).
     pub log_panel: Rect,
 }
 
 impl AppLayout {
     /// Compute layout areas for the given terminal size.
     pub fn new(area: Rect) -> Self {
-        // Vertical split: top row (30%), middle row (35%), log (35%)
+        // Vertical split: top row (18%), middle row (47%), bottom row (35%)
         let vertical = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Percentage(30),
-                Constraint::Percentage(35),
+                Constraint::Percentage(18),
+                Constraint::Percentage(47),
                 Constraint::Percentage(35),
             ])
             .split(area);
 
-        // Top row: market info (60%) | strategy (40%)
+        // Top row: market (50%) | pnl (50%)
         let top = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
             .split(vertical[0]);
 
-        // Middle row: split vertically first into left/right
+        // Middle row: orderbook (45%) | positions (55%)
         let middle = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
             .split(vertical[1]);
 
-        // Left middle: orderbook (70%) and risk/pnl (30%)
-        let left_middle = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
-            .split(middle[0]);
+        // Bottom row: log (65%) | strategy (35%)
+        let bottom = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
+            .split(vertical[2]);
 
         Self {
             market_info: top[0],
-            strategy_panel: top[1],
-            orderbook: left_middle[0],
+            strategy_panel: bottom[1],
+            risk_panel: top[1],
+            orderbook: middle[0],
             positions: middle[1],
-            risk_panel: left_middle[1],
-            log_panel: vertical[2],
+            log_panel: bottom[0],
         }
     }
 }
@@ -82,9 +83,9 @@ mod tests {
         let panels = [
             layout.market_info,
             layout.strategy_panel,
+            layout.risk_panel,
             layout.orderbook,
             layout.positions,
-            layout.risk_panel,
             layout.log_panel,
         ];
 
@@ -111,9 +112,9 @@ mod tests {
         let panels = [
             layout.market_info,
             layout.strategy_panel,
+            layout.risk_panel,
             layout.orderbook,
             layout.positions,
-            layout.risk_panel,
             layout.log_panel,
         ];
 

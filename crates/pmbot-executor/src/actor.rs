@@ -32,12 +32,8 @@ pub trait OrderExecutor: Send + Sync {
         post_only: bool,
     ) -> Result<OrderId>;
 
-    async fn submit_market(
-        &self,
-        token_id: &TokenId,
-        side: Side,
-        size: Decimal,
-    ) -> Result<OrderId>;
+    async fn submit_market(&self, token_id: &TokenId, side: Side, size: Decimal)
+    -> Result<OrderId>;
 
     async fn cancel(&self, order_id: &OrderId) -> Result<()>;
 
@@ -91,14 +87,17 @@ impl<E: OrderExecutor + 'static> ExecutorActor<E> {
         info!("executor actor started");
 
         // Run reconciliation
-        match crate::reconciler::Reconciler::reconcile(&self.executor, &mut self.tracked_orders).await {
+        match crate::reconciler::Reconciler::reconcile(&self.executor, &mut self.tracked_orders)
+            .await
+        {
             Ok(events) => {
                 for event in events {
                     let _ = self.events_tx.send(event);
                 }
             }
             Err(e) => {
-                warn!("reconciliation failed: {}", e);
+                error!("fatal error: reconciliation failed: {}", e);
+                return; // Fatal: do not start the executor loop if reconciliation fails
             }
         }
 
@@ -120,8 +119,14 @@ impl<E: OrderExecutor + 'static> ExecutorActor<E> {
                 order_type,
                 post_only,
             } => {
-                let mut tracked =
-                    TrackedOrder::new(signal_id, market_id.clone(), token_id.clone(), side, price, size);
+                let mut tracked = TrackedOrder::new(
+                    signal_id,
+                    market_id.clone(),
+                    token_id.clone(),
+                    side,
+                    price,
+                    size,
+                );
 
                 if tracked.submit().is_err() {
                     error!("failed to transition order to Submitted");
@@ -146,7 +151,7 @@ impl<E: OrderExecutor + 'static> ExecutorActor<E> {
                             order_id: order_id.clone(),
                             signal_id,
                         });
-                        
+
                         // For paper mode simulation, fill immediately.
                         // In live mode, this would be handled by a websocket/polling task.
                         let _ = tracked.fill();
@@ -251,41 +256,35 @@ impl<E: OrderExecutor + 'static> ExecutorActor<E> {
                 }
             }
 
-            ExecutableOrder::Cancel { order_id } => {
-                match self.executor.cancel(&order_id).await {
-                    Ok(()) => {
-                        if let Some(tracked) = self.tracked_orders.get_mut(&order_id) {
-                            let _ = tracked.cancel();
-                        }
-                        self.emit(ExecutionEvent::OrderCancelled {
-                            order_id,
-                        });
+            ExecutableOrder::Cancel { order_id } => match self.executor.cancel(&order_id).await {
+                Ok(()) => {
+                    if let Some(tracked) = self.tracked_orders.get_mut(&order_id) {
+                        let _ = tracked.cancel();
                     }
-                    Err(e) => {
-                        warn!("cancel failed for {}: {}", order_id, e);
-                    }
+                    self.emit(ExecutionEvent::OrderCancelled { order_id });
                 }
-            }
+                Err(e) => {
+                    warn!("cancel failed for {}: {}", order_id, e);
+                }
+            },
 
-            ExecutableOrder::CancelAll => {
-                match self.executor.cancel_all().await {
-                    Ok(()) => {
-                        for (oid, tracked) in &mut self.tracked_orders {
-                            if !tracked.state.is_terminal() {
-                                let _ = tracked.cancel();
-                                self.events_tx
-                                    .send(ExecutionEvent::OrderCancelled {
-                                        order_id: oid.clone(),
-                                    })
-                                    .ok();
-                            }
+            ExecutableOrder::CancelAll => match self.executor.cancel_all().await {
+                Ok(()) => {
+                    for (oid, tracked) in &mut self.tracked_orders {
+                        if !tracked.state.is_terminal() {
+                            let _ = tracked.cancel();
+                            self.events_tx
+                                .send(ExecutionEvent::OrderCancelled {
+                                    order_id: oid.clone(),
+                                })
+                                .ok();
                         }
                     }
-                    Err(e) => {
-                        warn!("cancel_all failed: {}", e);
-                    }
                 }
-            }
+                Err(e) => {
+                    warn!("cancel_all failed: {}", e);
+                }
+            },
         }
     }
 
