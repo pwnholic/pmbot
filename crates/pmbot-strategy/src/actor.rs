@@ -170,28 +170,31 @@ impl StrategyActor {
                                         strategy.on_fill(&fill_event);
                                     }
                                 }
-                                pmbot_core::messages::ExecutionEvent::OrderPartialFill { order_id, filled, remaining: _ } => {
-                                    // Try to reconstruct FillEvent from open orders if possible
-                                    // Note: `filled` here is the *total* filled amount. To properly emit a FillEvent for
-                                    // strategies, we ideally need the *delta* (amount just filled). 
-                                    // For simplicity in this fix, we will emit an event but note that
-                                    // tracking the exact delta requires holding previous state.
-                                    // For now, we pass `remaining` and `filled` appropriately if possible.
+                                pmbot_core::messages::ExecutionEvent::OrderPartialFill {
+                                    order_id,
+                                    signal_id,
+                                    market_id,
+                                    side,
+                                    price,
+                                    filled,
+                                    ..
+                                } => {
                                     let world = self.world_builder.snapshot();
-                                    if let Some(order) = world.open_orders.iter().find(|o| o.order_id == order_id.clone()) {
-                                        // To get the delta, we would need to know what was filled previously.
-                                        // As a temporary fix, we'll use `filled` but strategies might double count.
-                                        let fill_event = pmbot_core::types::FillEvent {
-                                            order_id: order_id.clone(),
-                                            signal_id: pmbot_core::types::SignalId::new(), // Partial fill doesn't carry signal_id
-                                            market_id: order.market_id.clone(),
-                                            side: order.side.clone(),
-                                            price: order.price.clone(),
-                                            size: filled.clone(), // WARNING: Strategies might double-count if they don't track state
-                                            timestamp: chrono::Utc::now(),
-                                        };
-                                        for strategy in self.registry.iter_mut() {
-                                            strategy.on_fill(&fill_event);
+                                    if let Some(order) = world.open_orders.iter().find(|o| o.order_id == order_id) {
+                                        let delta = filled.saturating_sub(order.filled);
+                                        if delta > Decimal::ZERO {
+                                            let fill_event = pmbot_core::types::FillEvent {
+                                                order_id,
+                                                signal_id,
+                                                market_id,
+                                                side,
+                                                price,
+                                                size: delta,
+                                                timestamp: chrono::Utc::now(),
+                                            };
+                                            for strategy in self.registry.iter_mut() {
+                                                strategy.on_fill(&fill_event);
+                                            }
                                         }
                                     }
                                 }
@@ -275,11 +278,13 @@ mod tests {
                 self.count += 1;
                 let token_id = snap.info.token_ids.first().cloned()
                     .unwrap_or(TokenId(String::new()));
+                let outcome = snap.info.outcomes.first().cloned().unwrap_or_default();
                 vec![Signal::Enter {
                     id: SignalId::new(),
                     strategy: "always_enter",
                     market_id: market_id.clone(),
                     token_id,
+                    outcome,
                     side: Side::Buy,
                     size: dec!(1),
                     price: Some(dec!(0.50)),
@@ -305,24 +310,32 @@ mod tests {
                 wins: 0,
                 losses: 0,
                 total_pnl: Decimal::ZERO,
+                pnl_history: Vec::new(),
                 custom: Vec::new(),
             }
         }
     }
 
     fn sample_market_info() -> MarketInfo {
+        use std::collections::HashMap;
+        let mut outcome_prices = HashMap::new();
+        outcome_prices.insert("Yes".to_string(), dec!(0.50));
+        outcome_prices.insert("No".to_string(), dec!(0.50));
         MarketInfo {
             id: MarketId("m-1".into()),
             question: "Test?".into(),
             slug: "test".into(),
             outcomes: vec!["Yes".into(), "No".into()],
             token_ids: vec![TokenId("tok".into())],
+            outcome_prices,
             condition_id: "cond".into(),
             neg_risk: false,
             active: true,
             end_date: None,
             liquidity: dec!(10000),
             volume: dec!(50000),
+            category: "Test".into(),
+            tags: vec!["test".into()],
         }
     }
 

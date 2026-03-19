@@ -13,13 +13,15 @@ use rust_decimal::Decimal;
 use pmbot_core::messages::{
     ExecutionEvent, FeedEvent, MarketEvent, MarketSnapshot, Position, WorldState,
 };
-use pmbot_core::types::{MarketId, OpenOrder, PricePoint, SpotPrice, Symbol};
+use pmbot_core::types::{MarketId, MarketInfo, OpenOrder, PricePoint, SpotPrice, Symbol};
 use std::time::Duration;
 
 /// Accumulates events and builds immutable [`WorldState`] snapshots.
 pub struct WorldStateBuilder {
     active_market_id: Option<MarketId>,
     markets: HashMap<MarketId, MarketSnapshot>,
+    /// All discovered markets available for trading (for TUI search).
+    discovered_markets: Vec<MarketInfo>,
     positions: Vec<Position>,
     open_orders: Vec<OpenOrder>,
     balance: Decimal,
@@ -34,6 +36,7 @@ impl WorldStateBuilder {
         Self {
             active_market_id: None,
             markets: HashMap::new(),
+            discovered_markets: Vec::new(),
             positions: Vec::new(),
             open_orders: Vec::new(),
             balance: initial_balance,
@@ -66,9 +69,7 @@ impl WorldStateBuilder {
                 }
             }
             MarketEvent::PriceChange {
-                market_id,
-                price,
-                ..
+                market_id, price, ..
             } => {
                 if let Some(snap) = self.markets.get_mut(market_id) {
                     snap.mid_price = Some(*price);
@@ -105,6 +106,10 @@ impl WorldStateBuilder {
             }
             MarketEvent::Connected | MarketEvent::Disconnected => {
                 // No state changes needed for connection events.
+            }
+            MarketEvent::MarketsDiscovered { markets } => {
+                // Store all discovered markets for TUI search.
+                self.discovered_markets = markets.clone();
             }
         }
     }
@@ -166,7 +171,10 @@ impl WorldStateBuilder {
             ExecutionEvent::OrderPartialFill {
                 order_id, filled, ..
             } => {
-                if let Some(order) = self.open_orders.iter_mut().find(|o| o.order_id == *order_id)
+                if let Some(order) = self
+                    .open_orders
+                    .iter_mut()
+                    .find(|o| o.order_id == *order_id)
                 {
                     order.filled = *filled;
                 }
@@ -205,6 +213,7 @@ impl WorldStateBuilder {
         WorldState {
             active_market_id: self.active_market_id.clone(),
             markets: self.markets.clone(),
+            discovered_markets: self.discovered_markets.clone(),
             positions: self.positions.clone(),
             open_orders: self.open_orders.clone(),
             balance: self.balance,
@@ -232,18 +241,25 @@ mod tests {
     }
 
     fn sample_market_info() -> MarketInfo {
+        let mut outcome_prices = std::collections::HashMap::new();
+        outcome_prices.insert("Yes".to_string(), dec!(0.5));
+        outcome_prices.insert("No".to_string(), dec!(0.5));
+
         MarketInfo {
             id: MarketId("market-1".into()),
             question: "Will BTC > 100k?".into(),
             slug: "btc-100k".into(),
             outcomes: vec!["Yes".into(), "No".into()],
             token_ids: vec![TokenId("tok-yes".into()), TokenId("tok-no".into())],
+            outcome_prices,
             condition_id: "cond-1".into(),
             neg_risk: false,
             active: true,
             end_date: None,
             liquidity: dec!(50000),
             volume: dec!(100000),
+            category: "Crypto".into(),
+            tags: vec!["test".into()],
         }
     }
 
@@ -409,6 +425,7 @@ mod tests {
             id: PositionId::new(),
             market_id: MarketId("m-1".into()),
             token_id: TokenId("tok".into()),
+            outcome: "Yes".into(),
             strategy: "lead_lag",
             side: pmbot_core::types::Side::Buy,
             entry_price: dec!(0.50),

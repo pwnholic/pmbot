@@ -1,11 +1,14 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
+use std::future::Future;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use tokio::sync::{broadcast, mpsc};
+use tokio::task::JoinSet;
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
@@ -14,6 +17,7 @@ use pmbot_core::messages::{
     ExecutableOrder, ExecutionEvent, FeedEvent, MarketEvent, PositionSnapshot, Signal,
 };
 use pmbot_core::types::{MarketId, Symbol};
+use pmbot_db::Database;
 use pmbot_executor::{ExecutorActor, LiveExecutor, PaperExecutor};
 use pmbot_feed::{FeedActor, RawFeedMessage, VolMethod, run_binance_ws};
 use pmbot_market::actor::RawBookMessage;
@@ -23,6 +27,120 @@ use pmbot_strategy::{
     BookImbalance, Convergence, FairValue, FlashCrash, LeadLag, MarketMaker, NegRiskArb, Strategy,
     StrategyActor, StrategyRegistry,
 };
+
+// ---------------------------------------------------------------------------
+// ActorSupervisor - monitors actors for crashes and handles restarts
+// ---------------------------------------------------------------------------
+
+/// Actor supervisor using JoinSet for crash notification and restart logic.
+struct ActorSupervisor {
+    actors: JoinSet<Result<()>>,
+}
+
+impl ActorSupervisor {
+    fn new() -> Self {
+        Self {
+            actors: JoinSet::new(),
+        }
+    }
+
+    /// Spawn an actor with crash logging.
+    fn spawn<F>(&mut self, name: &'static str, fut: F)
+    where
+        F: Future<Output = Result<()>> + Send + 'static,
+    {
+        self.actors.spawn(async move {
+            match fut.await {
+                Ok(()) => {
+                    tracing::info!(actor = name, "actor completed successfully");
+                    Ok(())
+                }
+                Err(e) => {
+                    tracing::error!(actor = name, error = %e, "actor failed");
+                    Err(e)
+                }
+            }
+        });
+    }
+
+    /// Spawn an actor with automatic restart on failure.
+    fn spawn_with_restart<F, Factory>(
+        &mut self,
+        name: &'static str,
+        factory: Factory,
+        max_restarts: u32,
+    )
+    where
+        F: Future<Output = Result<()>> + Send + 'static,
+        Factory: Fn() -> F + Send + Sync + 'static,
+    {
+        self.actors.spawn(async move {
+            let mut restarts = 0u32;
+            loop {
+                match factory().await {
+                    Ok(()) => {
+                        tracing::info!(actor = name, "actor completed successfully");
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        restarts += 1;
+                        if restarts > max_restarts {
+                            tracing::error!(actor = name, restarts, "max restarts reached, giving up");
+                            return Err(e);
+                        }
+                        
+                        let backoff = Duration::from_millis(100 *2u64.pow(restarts.min(8)));
+                        tracing::warn!(
+                            actor = name,
+                            error = %e,
+                            restarts,
+                            backoff_ms = backoff.as_millis() as u64,
+                            "actor failed, restarting"
+                        );
+                        tokio::time::sleep(backoff).await;
+                    }
+                }
+            }
+        });
+    }
+
+    /// Wait for all actors to complete, logging any failures.
+    /// Returns Ok if all actors completed successfully, Err if any failed.
+    async fn wait_all(mut self) -> Result<()> {
+        let mut failed = Vec::new();
+        while let Some(result) = self.actors.join_next().await {
+            match result {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    failed.push(e);
+                }
+                Err(e) => {
+                    failed.push(anyhow::anyhow!("actor panicked: {}", e));
+                }
+            }
+        }
+        
+        if failed.is_empty() {
+            Ok(())
+        } else {
+            for e in &failed {
+                tracing::error!(error = %e, "actor failed during shutdown");
+            }
+            Err(anyhow::anyhow!("{} actors failed", failed.len()))
+        }
+    }
+
+    /// Wait for actors with timeout.
+    async fn wait_all_with_timeout(self, timeout: Duration) -> Result<()> {
+        match tokio::time::timeout(timeout, self.wait_all()).await {
+            Ok(result) => result,
+            Err(_) => {
+                tracing::warn!(timeout_secs = timeout.as_secs(), "timeout waiting for actors to stop");
+                Err(anyhow::anyhow!("timeout waiting for actors"))
+            }
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // CLI definition
@@ -44,8 +162,8 @@ struct Cli {
 enum Command {
     /// Run the trading bot.
     Run {
-        /// Path to config TOML file.
-        #[arg(short, long, default_value = "config/default.toml")]
+        /// Path to config YAML file.
+        #[arg(short, long, default_value = "config/default.yaml")]
         config: PathBuf,
 
         /// Force paper trading mode regardless of config.
@@ -76,8 +194,8 @@ enum Command {
 enum ConfigAction {
     /// Print the fully resolved configuration.
     Show {
-        /// Path to config TOML file.
-        #[arg(short, long, default_value = "config/default.toml")]
+        /// Path to config YAML file.
+        #[arg(short, long, default_value = "config/default.yaml")]
         config: PathBuf,
     },
 }
@@ -373,12 +491,35 @@ async fn run_paper(config: BotConfig, config_path: PathBuf) -> Result<()> {
     );
 
     let (_watcher, mut config_rx) = pmbot_core::config_watcher::start_config_watcher(
-        config_path,
+        config_path.clone(),
         std::time::Duration::from_secs(5),
     )?;
+
+    // Create a watch channel for propagating config updates
+    let (config_tx, _) = tokio::sync::watch::channel(config.clone());
+
     tokio::spawn(async move {
         while let Ok(event) = config_rx.recv().await {
-            info!(?event, "config reloaded");
+            match event {
+                pmbot_core::ConfigEvent::Reloaded(new_config) => {
+                    if new_config.validate().is_ok() {
+                        info!(
+                            mode = %new_config.general.mode,
+                            bankroll = %new_config.risk.bankroll,
+                            "config hot-reloaded successfully"
+                        );
+                        let _ = config_tx.send(new_config);
+                    } else {
+                        warn!("invalid config reloaded, keeping previous configuration");
+                    }
+                }
+                pmbot_core::ConfigEvent::Invalid(err) => {
+                    warn!(error = %err, "config reload failed validation");
+                }
+                pmbot_core::ConfigEvent::ReloadFailed(err) => {
+                    warn!(error = %err, "config reload failed");
+                }
+            }
         }
     });
 
@@ -414,6 +555,25 @@ async fn run_paper(config: BotConfig, config_path: PathBuf) -> Result<()> {
         MarketId("paper-mode".into()),
     );
 
+    // Initialize database for persistence
+    let db_path = config.general.data_dir.join("pmbot.db");
+    let db_path_str = db_path.to_string_lossy().into_owned();
+    let db = match Database::connect(&db_path_str).await {
+        Ok(db) => {
+            info!(path = %db_path.display(), "database connected");
+            let db = Arc::new(db);
+            // Record startup time
+            if let Err(e) = db.state().record_startup().await {
+                warn!(error = %e, "failed to record startup time");
+            }
+            Some(db)
+        }
+        Err(e) => {
+            warn!(error = %e, "failed to connect database, persistence disabled");
+            None
+        }
+    };
+
     // Spawn a task that updates paper executor's mid price from live market data
     let paper_exec_clone = paper_executor.clone();
     let mut paper_market_rx = channels.market_event_tx.subscribe();
@@ -430,11 +590,30 @@ async fn run_paper(config: BotConfig, config_path: PathBuf) -> Result<()> {
         }
     });
 
-    let executor_actor = ExecutorActor::new(
+    let mut executor_actor = ExecutorActor::new(
         paper_executor,
         channels.order_rx,
         channels.execution_event_tx.clone(),
     );
+    
+    // Wire up database for persistence
+    if let Some(ref db) = db {
+        executor_actor = executor_actor.with_db(Arc::clone(db));
+    }
+
+    // Run reconciliation before starting actors
+    info!("running startup reconciliation...");
+    match executor_actor.reconcile().await {
+        Ok(events) => {
+            for event in events {
+                let _ = channels.execution_event_tx.send(event);
+            }
+            info!(tracked = executor_actor.tracked_orders().len(), "reconciliation complete");
+        }
+        Err(e) => {
+            error!(error = %e, "reconciliation failed, continuing anyway");
+        }
+    }
 
     info!("spawning all actors...");
 
@@ -452,28 +631,41 @@ async fn run_paper(config: BotConfig, config_path: PathBuf) -> Result<()> {
         pmbot_market::run_polymarket_ws(pm_event_rx, pm_book_tx, shutdown_rx_pm).await;
     });
 
-    let market = tokio::spawn(async move {
+    // Use ActorSupervisor for crash notification
+    let mut supervisor = ActorSupervisor::new();
+    
+    supervisor.spawn("market", async move {
         if let Err(e) = actors.market_actor.run(&discovery, channels.book_rx).await {
             error!(error = %e, "market actor error");
+            Err(e)
+        } else {
+            Ok(())
         }
     });
-
-    let feed = tokio::spawn(async move {
+    
+    supervisor.spawn("feed", async move {
         actors.feed_actor.run().await;
+        Ok(())
     });
-    let strat = tokio::spawn(async move {
+    
+    supervisor.spawn("strategy", async move {
         actors.strategy_actor.run().await;
+        Ok(())
     });
-    let risk = tokio::spawn(async move {
+    
+    supervisor.spawn("risk", async move {
         actors.risk_actor.run().await;
+        Ok(())
     });
-    let exec = tokio::spawn(async move {
+    
+    supervisor.spawn("executor", async move {
         executor_actor.run().await;
+        Ok(())
     });
 
     let tui_rx_opt = channels.tui_rx.take();
     let tui_shutdown_tx = channels.shutdown_tx.clone();
-    let tui = tokio::spawn(async move {
+    let _tui = tokio::spawn(async move {
         if let Some(tui_rx) = tui_rx_opt {
             if let Err(e) = pmbot_tui::run::run_tui(tui_rx, tui_shutdown_tx).await {
                 error!("TUI error: {}", e);
@@ -493,20 +685,38 @@ async fn run_paper(config: BotConfig, config_path: PathBuf) -> Result<()> {
     if !use_tui {
         info!("shutting down...");
     }
+    
+    // Send shutdown signal to all actors
     let _ = channels.shutdown_tx.send(());
-    let _ = tokio::time::timeout(Duration::from_secs(5), async {
-        let _ = tokio::join!(
-            binance_ws,
-            polymarket_ws,
-            market,
-            feed,
-            strat,
-            risk,
-            exec,
-            tui
-        );
+    
+    // Wait for actors to stop with timeout
+    match tokio::time::timeout(Duration::from_secs(10), supervisor.wait_all()).await {
+        Ok(Ok(())) => {
+            info!("all actors stopped gracefully");
+        }
+        Ok(Err(e)) => {
+            warn!(error = %e, "some actors failed during shutdown");
+        }
+        Err(_) => {
+            warn!("timeout waiting for actors to stop, forcing shutdown");
+        }
+    }
+
+    // Wait for websocket tasks
+    let _ = tokio::time::timeout(Duration::from_secs(2), async {
+        let _ = binance_ws.await;
+        let _ = polymarket_ws.await;
     })
     .await;
+
+    // Record graceful shutdown in database
+    if let Some(ref db) = db {
+        if let Err(e) = db.state().record_shutdown().await {
+            warn!(error = %e, "failed to record shutdown time");
+        } else {
+            info!("shutdown time recorded");
+        }
+    }
 
     println!("\n  Bot stopped. Goodbye!\n");
     Ok(())
@@ -520,12 +730,35 @@ async fn run_live(mut config: BotConfig, config_path: PathBuf) -> Result<()> {
     info!(mode = "live", "starting live actor orchestration");
 
     let (_watcher, mut config_rx) = pmbot_core::config_watcher::start_config_watcher(
-        config_path,
+        config_path.clone(),
         std::time::Duration::from_secs(5),
     )?;
+
+    // Create a watch channel for propagating config updates
+    let (config_tx, _) = tokio::sync::watch::channel(config.clone());
+
     tokio::spawn(async move {
         while let Ok(event) = config_rx.recv().await {
-            info!(?event, "config reloaded");
+            match event {
+                pmbot_core::ConfigEvent::Reloaded(new_config) => {
+                    if new_config.validate().is_ok() {
+                        info!(
+                            mode = %new_config.general.mode,
+                            bankroll = %new_config.risk.bankroll,
+                            "config hot-reloaded successfully"
+                        );
+                        let _ = config_tx.send(new_config);
+                    } else {
+                        warn!("invalid config reloaded, keeping previous configuration");
+                    }
+                }
+                pmbot_core::ConfigEvent::Invalid(err) => {
+                    warn!(error = %err, "config reload failed validation");
+                }
+                pmbot_core::ConfigEvent::ReloadFailed(err) => {
+                    warn!(error = %err, "config reload failed");
+                }
+            }
         }
     });
 
@@ -634,11 +867,50 @@ async fn run_live(mut config: BotConfig, config_path: PathBuf) -> Result<()> {
     );
 
     let live_executor = LiveExecutor::new(clob_client, signer);
-    let executor_actor = ExecutorActor::new(
+
+    // Initialize database for persistence
+    let db_path = config.general.data_dir.join("pmbot.db");
+    let db_path_str = db_path.to_string_lossy().into_owned();
+    let db = match Database::connect(&db_path_str).await {
+        Ok(db) => {
+            info!(path = %db_path.display(), "database connected");
+            let db = Arc::new(db);
+            // Record startup time
+            if let Err(e) = db.state().record_startup().await {
+                warn!(error = %e, "failed to record startup time");
+            }
+            Some(db)
+        }
+        Err(e) => {
+            warn!(error = %e, "failed to connect database, persistence disabled");
+            None
+        }
+    };
+
+    let mut executor_actor = ExecutorActor::new(
         live_executor,
         channels.order_rx,
         channels.execution_event_tx.clone(),
     );
+    
+    // Wire up database for persistence
+    if let Some(ref db) = db {
+        executor_actor = executor_actor.with_db(Arc::clone(db));
+    }
+
+    // Run reconciliation before starting actors
+    info!("running startup reconciliation...");
+    match executor_actor.reconcile().await {
+        Ok(events) => {
+            for event in events {
+                let _ = channels.execution_event_tx.send(event);
+            }
+            info!(tracked = executor_actor.tracked_orders().len(), "reconciliation complete");
+        }
+        Err(e) => {
+            error!(error = %e, "reconciliation failed, continuing anyway");
+        }
+    }
 
     info!("spawning all actors...");
 
@@ -655,28 +927,41 @@ async fn run_live(mut config: BotConfig, config_path: PathBuf) -> Result<()> {
         pmbot_market::run_polymarket_ws(pm_event_rx, pm_book_tx, shutdown_rx_pm).await;
     });
 
-    let market = tokio::spawn(async move {
+    // Use ActorSupervisor for crash notification
+    let mut supervisor = ActorSupervisor::new();
+    
+    supervisor.spawn("market", async move {
         if let Err(e) = actors.market_actor.run(&discovery, channels.book_rx).await {
             error!(error = %e, "market actor error");
+            Err(e)
+        } else {
+            Ok(())
         }
     });
-
-    let feed = tokio::spawn(async move {
+    
+    supervisor.spawn("feed", async move {
         actors.feed_actor.run().await;
+        Ok(())
     });
-    let strat = tokio::spawn(async move {
+    
+    supervisor.spawn("strategy", async move {
         actors.strategy_actor.run().await;
+        Ok(())
     });
-    let risk = tokio::spawn(async move {
+    
+    supervisor.spawn("risk", async move {
         actors.risk_actor.run().await;
+        Ok(())
     });
-    let exec = tokio::spawn(async move {
+    
+    supervisor.spawn("executor", async move {
         executor_actor.run().await;
+        Ok(())
     });
 
     let tui_rx_opt = channels.tui_rx.take();
     let tui_shutdown_tx = channels.shutdown_tx.clone();
-    let tui = tokio::spawn(async move {
+    let _tui = tokio::spawn(async move {
         if let Some(tui_rx) = tui_rx_opt {
             if let Err(e) = pmbot_tui::run::run_tui(tui_rx, tui_shutdown_tx).await {
                 error!("TUI error: {}", e);
@@ -697,20 +982,38 @@ async fn run_live(mut config: BotConfig, config_path: PathBuf) -> Result<()> {
     if !use_tui {
         info!("shutting down...");
     }
+    
+    // Send shutdown signal to all actors
     let _ = channels.shutdown_tx.send(());
-    let _ = tokio::time::timeout(Duration::from_secs(5), async {
-        let _ = tokio::join!(
-            binance_ws,
-            polymarket_ws,
-            market,
-            feed,
-            strat,
-            risk,
-            exec,
-            tui
-        );
+    
+    // Wait for actors to stop with timeout
+    match tokio::time::timeout(Duration::from_secs(10), supervisor.wait_all()).await {
+        Ok(Ok(())) => {
+            info!("all actors stopped gracefully");
+        }
+        Ok(Err(e)) => {
+            warn!(error = %e, "some actors failed during shutdown");
+        }
+        Err(_) => {
+            warn!("timeout waiting for actors to stop, forcing shutdown");
+        }
+    }
+
+    // Wait for websocket tasks
+    let _ = tokio::time::timeout(Duration::from_secs(2), async {
+        let _ = binance_ws.await;
+        let _ = polymarket_ws.await;
     })
     .await;
+
+    // Record graceful shutdown in database
+    if let Some(ref db) = db {
+        if let Err(e) = db.state().record_shutdown().await {
+            warn!(error = %e, "failed to record shutdown time");
+        } else {
+            info!("shutdown time recorded");
+        }
+    }
 
     if !use_tui {
         println!("\n  Bot stopped. Goodbye!\n");

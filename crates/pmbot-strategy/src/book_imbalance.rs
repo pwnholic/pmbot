@@ -151,6 +151,8 @@ impl Strategy for BookImbalance {
             None => return Vec::new(),
         };
 
+        let outcome = snap.info.outcomes.first().cloned().unwrap_or_default();
+
         // 2. Read imbalance from the pre-computed snapshot.
         let imbalance = snap.imbalance;
 
@@ -198,6 +200,7 @@ impl Strategy for BookImbalance {
                     strategy: "book_imbalance",
                     market_id: market_id.clone(),
                     token_id,
+                    outcome,
                     side: direction,
                     size: dec!(1),
                     price: snap.mid_price,
@@ -305,6 +308,7 @@ impl Strategy for BookImbalance {
             wins: 0,
             losses: 0,
             total_pnl: Decimal::ZERO,
+            pnl_history: Vec::new(),
             custom: vec![
                 ("threshold", format!("{:.2}", self.threshold)),
                 ("levels", self.levels.to_string()),
@@ -376,6 +380,9 @@ mod tests {
                     end_date: None,
                     liquidity: dec!(10000),
                     volume: dec!(50000),
+            outcome_prices: std::collections::HashMap::new(),
+            category: "Test".into(),
+            tags: vec!["test".into()],
                 },
                 book: Arc::new(book),
                 mid_price,
@@ -518,6 +525,9 @@ mod tests {
             end_date: None,
             liquidity: dec!(10000),
             volume: dec!(50000),
+            outcome_prices: std::collections::HashMap::new(),
+            category: "Test".into(),
+            tags: vec!["test".into()],
         };
 
         strat.on_market_change(&MarketId("m-1".into()), &new_market);

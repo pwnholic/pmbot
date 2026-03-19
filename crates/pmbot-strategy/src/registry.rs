@@ -98,6 +98,7 @@ mod tests {
                 wins: 0,
                 losses: 0,
                 total_pnl: rust_decimal::Decimal::ZERO,
+                pnl_history: Vec::new(),
                 custom: Vec::new(),
             }
         }

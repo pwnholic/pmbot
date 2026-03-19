@@ -1,0 +1,110 @@
+# Polymarket Bot Configuration
+# YAML format supports comments for better readability
+
+# General bot settings
+general:
+  mode: "paper"                          # "paper" | "live"
+  log_level: "info"                      # trace | debug | info | warn | error
+  strategies:                            # enabled strategies
+    - "lead_lag"
+    - "fair_value"
+
+# Wallet configuration
+wallet:
+  signature_type: "gnosis_safe"           # gnosis_safe | eoawallet
+
+# Polymarket CLOB settings
+clob:
+  host: "https://clob.polymarket.com"
+
+# Market discovery settings
+market:
+  discovery_interval_secs: 60            # how often to discover new markets
+  min_liquidity: 1000                    # minimum liquidity (USD)
+  min_volume: 0                          # minimum volume (USD)
+  tags:                                  # market categories to trade
+    category:
+      - "crypto"
+  market_type: "5min"                    # market type filter
+  keyword: "BTC"                         # keyword search
+  no_trade_zone_secs: 30                 # seconds before market close to stop trading
+  rotation_lookahead_secs: 15            # lookahead for market rotation
+
+# Risk management
+risk:
+  bankroll: 15.0                         # starting bankroll (USD)
+  kelly_fraction: 0.15                   # Kelly criterion fraction
+  max_position_pct: 0.05                 # max % of bankroll per position
+  max_positions: 5                       # max concurrent positions
+  daily_loss_limit_pct: 0.05             # daily loss limit (% of bankroll)
+  stop_loss_pct: 0.30                    # stop loss (% from entry)
+  take_profit_multiplier: 2.0            # take profit multiplier
+  min_edge: 0.01                         # minimum edge to trade
+  no_trade_zone_secs: 60                 # seconds before expiry to stop trading
+  kill_switch_path: "/tmp/pmbot-kill"    # file to trigger emergency stop
+
+# External data feed
+feed:
+  binance:
+    symbols:
+      - "BTCUSDT"
+    vol_window_secs: 900                 # volatility window
+    vol_method: "ewma"                   # ewma | simple
+
+# Strategy-specific configurations
+strategy:
+  # Lead-lag strategy: trades based on lead-lag relationship
+  lead_lag:
+    enabled: true
+    lag_threshold: 0.005
+    entry_delay_ms: 500
+    exit_convergence_pct: 0.002
+
+  # Fair value strategy: trades based on estimated fair value
+  fair_value:
+    enabled: true
+    min_time_to_expiry_secs: 120
+    vol_multiplier: 1.0
+    min_activation_edge: 0.01
+
+  # Flash crash strategy: catches rapid price drops
+  flash_crash:
+    enabled: false
+    drop_threshold: 0.15
+    lookback_secs: 30
+    reversion_target: 0.5
+    min_recovery_imbalance: 0.1
+
+  # Book imbalance strategy: trades based on order book imbalance
+  book_imbalance:
+    enabled: false
+    imbalance_threshold: 0.6
+    levels: 5
+    momentum_window: 5
+    min_activation_edge: 0.05
+
+  # Negative risk arbitrage strategy
+  negrisk_arb:
+    enabled: false
+    sum_deviation_threshold: 0.02
+
+  # Convergence strategy: trades markets approaching resolution
+  convergence:
+    enabled: false
+    min_probability: 0.90
+    max_time_to_expiry_secs: 300
+    min_activation_edge: 0.05
+
+  # Market maker strategy
+  market_maker:
+    enabled: false
+    spread_bps: 200
+    max_inventory: 100
+    quote_size: 10
+    refresh_interval_ms: 1000
+
+# Terminal UI settings
+tui:
+  enabled: false
+  refresh_rate_ms: 100
+  log_buffer_size: 500

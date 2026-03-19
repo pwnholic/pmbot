@@ -1,13 +1,27 @@
-use ratatui::Frame;
+use ratatui::{
+    layout::{Constraint, Direction, Layout, Rect},
+    widgets::Clear,
+    Frame,
+};
 
 use crate::widgets::{
-    log::LogWidget, market::MarketWidget, orderbook::OrderbookWidget, pnl::PnlWidget,
-    positions::PositionsWidget, strategy::StrategyWidget,
+    log::LogWidget, market::MarketWidget, market_search::MarketSearchWidget,
+    orderbook::OrderbookWidget, pnl::PnlWidget, positions::PositionsWidget,
+    strategy::StrategyWidget,
 };
-use crate::{App, AppLayout};
+use crate::{App, AppLayout, AppMode};
 
 /// Draw the entire TUI application dashboard to the frame.
 pub fn draw(f: &mut Frame, app: &mut App) {
+    match app.mode {
+        AppMode::Dashboard => draw_dashboard(f, app),
+        AppMode::Search => draw_search(f, app),
+        AppMode::Filter => draw_filter(f, app),
+    }
+}
+
+/// Draw the main dashboard view.
+fn draw_dashboard(f: &mut Frame, app: &App) {
     let layout = AppLayout::new(f.area());
 
     let mut active_snap = None;
@@ -64,4 +78,33 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
     // Logs (bottom)
     f.render_widget(LogWidget::new(&app.logs), layout.log_panel);
+}
+
+/// Draw the market search view.
+fn draw_search(f: &mut Frame, app: &App) {
+    let area = f.area();
+    f.render_widget(MarketSearchWidget::new(&app.search_state), area);
+}
+
+/// Draw the filter menu view as a floating overlay.
+fn draw_filter(f: &mut Frame, app: &App) {
+    // Draw the dashboard behind the filter
+    draw_dashboard(f, app);
+
+    // Clear the area for the filter modal
+    let area = f.area();
+
+    // Center the filter modal (70% width, 80% height)
+    let modal_width = (area.width as f32 * 0.7) as u16;
+    let modal_height = (area.height as f32 * 0.8) as u16;
+    let modal_x = (area.width.saturating_sub(modal_width)) / 2;
+    let modal_y = (area.height.saturating_sub(modal_height)) / 2;
+
+    let modal_area = Rect::new(modal_x, modal_y, modal_width, modal_height);
+
+    // Clear the modal area
+    f.render_widget(Clear, modal_area);
+
+    // Render the filter menu
+    app.filter_menu.render(modal_area, f.buffer_mut());
 }

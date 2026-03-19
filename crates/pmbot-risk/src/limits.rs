@@ -157,6 +157,7 @@ mod tests {
             strategy: "test",
             market_id: MarketId("m1".into()),
             token_id: TokenId("t1".into()),
+            outcome: "Yes".to_string(),
             side: Side::Buy,
             size,
             price: Some(price),
@@ -169,6 +170,7 @@ mod tests {
         WorldState {
             active_market_id: None,
             markets: HashMap::new(),
+            discovered_markets: vec![],
             positions: vec![],
             open_orders: vec![],
             balance,

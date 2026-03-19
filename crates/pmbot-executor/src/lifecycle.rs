@@ -24,7 +24,18 @@ impl OrderState {
     pub fn is_terminal(&self) -> bool {
         matches!(
             self,
-            OrderState::Filled | OrderState::Cancelled | OrderState::Rejected { .. } | OrderState::TimedOut
+            OrderState::Filled
+                | OrderState::Cancelled
+                | OrderState::Rejected { .. }
+                | OrderState::TimedOut
+        )
+    }
+
+    /// Returns `true` if the order is actively live on the exchange.
+    pub fn is_live(&self) -> bool {
+        matches!(
+            self,
+            OrderState::Live { .. } | OrderState::PartialFill { .. }
         )
     }
 }
@@ -222,12 +233,8 @@ mod tests {
         assert!(!order.state.is_terminal());
 
         order.submit().unwrap();
-        order
-            .make_live(OrderId("ord-1".into()))
-            .unwrap();
-        order
-            .partial_fill(dec!(5), dec!(5))
-            .unwrap();
+        order.make_live(OrderId("ord-1".into())).unwrap();
+        order.partial_fill(dec!(5), dec!(5)).unwrap();
         order.fill().unwrap();
 
         assert!(order.state.is_terminal());
@@ -237,9 +244,7 @@ mod tests {
     fn direct_fill_from_live() {
         let mut order = make_order();
         order.submit().unwrap();
-        order
-            .make_live(OrderId("ord-2".into()))
-            .unwrap();
+        order.make_live(OrderId("ord-2".into())).unwrap();
         order.fill().unwrap();
         assert!(matches!(order.state, OrderState::Filled));
     }
@@ -248,9 +253,7 @@ mod tests {
     fn cancel_from_live() {
         let mut order = make_order();
         order.submit().unwrap();
-        order
-            .make_live(OrderId("ord-3".into()))
-            .unwrap();
+        order.make_live(OrderId("ord-3".into())).unwrap();
         order.cancel().unwrap();
         assert!(matches!(order.state, OrderState::Cancelled));
     }
@@ -291,13 +294,9 @@ mod tests {
     fn cannot_go_from_filled_to_live() {
         let mut order = make_order();
         order.submit().unwrap();
-        order
-            .make_live(OrderId("ord-4".into()))
-            .unwrap();
+        order.make_live(OrderId("ord-4".into())).unwrap();
         order.fill().unwrap();
-        let err = order
-            .make_live(OrderId("ord-5".into()))
-            .unwrap_err();
+        let err = order.make_live(OrderId("ord-5".into())).unwrap_err();
         assert_eq!(err.from, "Filled");
         assert_eq!(err.to, "Live");
     }
@@ -323,9 +322,7 @@ mod tests {
     fn cannot_timeout_from_live() {
         let mut order = make_order();
         order.submit().unwrap();
-        order
-            .make_live(OrderId("ord-6".into()))
-            .unwrap();
+        order.make_live(OrderId("ord-6".into())).unwrap();
         let err = order.timeout().unwrap_err();
         assert_eq!(err.from, "Live");
     }

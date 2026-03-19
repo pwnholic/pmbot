@@ -1,7 +1,8 @@
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
+use figment::providers::{Env, Format, Yaml};
 use figment::Figment;
-use figment::providers::{Env, Format, Toml};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
@@ -33,9 +34,9 @@ pub struct BotConfig {
 }
 
 impl BotConfig {
-    /// Load config from a TOML file with environment variable overlay.
+    /// Load config from a YAML file with environment variable overlay.
     ///
-    /// Precedence: env vars (PMBOT_ prefix) > TOML file > defaults.
+    /// Precedence: env vars (PMBOT_ prefix) > YAML file > defaults.
     pub fn load(path: impl AsRef<Path>) -> Result<Self, ConfigError> {
         let path = path.as_ref();
         if !path.exists() {
@@ -45,7 +46,7 @@ impl BotConfig {
         }
 
         let config: Self = Figment::new()
-            .merge(Toml::file(path))
+            .merge(Yaml::file(path))
             .merge(Env::prefixed("PMBOT_").split("_").lowercase(true))
             .extract()
             .map_err(|e| ConfigError::Parse(e.to_string()))?;
@@ -54,7 +55,7 @@ impl BotConfig {
         Ok(config)
     }
 
-    /// Load from figment with only defaults + env overlay (no TOML file).
+    /// Load from figment with only defaults + env overlay (no YAML file).
     pub fn from_env() -> Result<Self, ConfigError> {
         let config: Self = Figment::new()
             .merge(Env::prefixed("PMBOT_").split("_").lowercase(true))
@@ -102,6 +103,8 @@ pub struct GeneralConfig {
     pub log_level: String,
     #[serde(default)]
     pub strategies: Vec<String>,
+    #[serde(default = "default_data_dir")]
+    pub data_dir: PathBuf,
 }
 
 impl Default for GeneralConfig {
@@ -110,6 +113,7 @@ impl Default for GeneralConfig {
             mode: default_mode(),
             log_level: default_log_level(),
             strategies: vec!["lead_lag".into(), "fair_value".into()],
+            data_dir: default_data_dir(),
         }
     }
 }
@@ -119,6 +123,11 @@ fn default_mode() -> String {
 }
 fn default_log_level() -> String {
     "info".into()
+}
+fn default_data_dir() -> PathBuf {
+    std::env::current_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join("data")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -165,12 +174,18 @@ pub struct MarketConfig {
     pub min_liquidity: u64,
     #[serde(default = "default_min_volume")]
     pub min_volume: u64,
+    /// Categories to search: ["politics", "sports", "crypto", "finance"]
+    #[serde(default = "default_categories")]
+    pub categories: Vec<String>,
+    /// Tags per category: {"politics": ["geopolitics", "election"], "sports": ["NFL", "NBA"]}
     #[serde(default)]
-    pub tags: Vec<String>,
-    #[serde(default = "default_market_type")]
-    pub market_type: String,
-    #[serde(default = "default_keyword")]
-    pub keyword: String,
+    pub tags: HashMap<String, Vec<String>>,
+    /// Free-text search queries: ["geopolitics", "election 2024"]
+    #[serde(default)]
+    pub search_queries: Vec<String>,
+    /// Tags to exclude from results: ["celebrity", "entertainment"]
+    #[serde(default)]
+    pub exclude_tags: Vec<String>,
     #[serde(default = "default_no_trade_zone")]
     pub no_trade_zone_secs: u64,
     #[serde(default = "default_rotation_lookahead")]
@@ -183,9 +198,10 @@ impl Default for MarketConfig {
             discovery_interval_secs: default_discovery_interval(),
             min_liquidity: default_min_liquidity(),
             min_volume: default_min_volume(),
-            tags: vec!["crypto".into()],
-            market_type: default_market_type(),
-            keyword: default_keyword(),
+            categories: default_categories(),
+            tags: HashMap::new(),
+            search_queries: Vec::new(),
+            exclude_tags: Vec::new(),
             no_trade_zone_secs: default_no_trade_zone(),
             rotation_lookahead_secs: default_rotation_lookahead(),
         }
@@ -201,11 +217,8 @@ fn default_min_liquidity() -> u64 {
 fn default_min_volume() -> u64 {
     10000
 }
-fn default_market_type() -> String {
-    "5min".into()
-}
-fn default_keyword() -> String {
-    "BTC".into()
+fn default_categories() -> Vec<String> {
+    vec!["crypto".into()]
 }
 fn default_no_trade_zone() -> u64 {
     60
@@ -636,24 +649,25 @@ mod tests {
     }
 
     #[test]
-    fn test_load_from_toml() {
-        let toml_content = r#"
-[general]
-mode = "live"
-log_level = "debug"
-strategies = ["fair_value"]
+    fn test_load_from_yaml() {
+        let yaml_content = r#"
+general:
+  mode: "live"
+  log_level: "debug"
+  strategies:
+    - "fair_value"
 
-[risk]
-bankroll = 500.0
-kelly_fraction = 0.10
-max_position_pct = 0.03
-max_positions = 3
+risk:
+  bankroll: 500.0
+  kelly_fraction: 0.10
+  max_position_pct: 0.03
+  max_positions: 3
 "#;
         let dir = std::env::temp_dir().join("pmbot-test-config");
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("test.toml");
+        let path = dir.join("test.yaml");
         let mut f = std::fs::File::create(&path).unwrap();
-        f.write_all(toml_content.as_bytes()).unwrap();
+        f.write_all(yaml_content.as_bytes()).unwrap();
 
         let config = BotConfig::load(&path).unwrap();
         assert_eq!(config.general.mode, "live");
@@ -670,7 +684,7 @@ max_positions = 3
 
     #[test]
     fn test_config_not_found() {
-        let result = BotConfig::load("/nonexistent/path.toml");
+        let result = BotConfig::load("/nonexistent/path.yaml");
         assert!(result.is_err());
         match result.unwrap_err() {
             ConfigError::NotFound { path } => {
@@ -697,11 +711,10 @@ max_positions = 3
     }
 
     #[test]
-    fn test_full_toml_roundtrip() {
+    fn test_full_yaml_roundtrip() {
         let config = BotConfig::default();
-        let toml_str =
-            toml::to_string_pretty(&config).expect("default config should serialize to TOML");
-        assert!(toml_str.contains("paper"));
-        // 137 check removed since chain_id is removed
+        let yaml_str =
+            serde_yaml::to_string(&config).expect("default config should serialize to YAML");
+        assert!(yaml_str.contains("paper"));
     }
 }

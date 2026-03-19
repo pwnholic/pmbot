@@ -1,7 +1,9 @@
+use std::collections::HashMap;
 use std::fmt;
 
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
+use rust_decimal_macros::dec;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -107,6 +109,18 @@ impl fmt::Display for Side {
     }
 }
 
+impl std::str::FromStr for Side {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_uppercase().as_str() {
+            "BUY" => Ok(Side::Buy),
+            "SELL" => Ok(Side::Sell),
+            _ => Err(anyhow::anyhow!("invalid side: {}", s)),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OrderType {
@@ -164,12 +178,110 @@ pub struct MarketInfo {
     pub slug: String,
     pub outcomes: Vec<String>,
     pub token_ids: Vec<TokenId>,
+    pub outcome_prices: HashMap<String, Decimal>,
     pub condition_id: String,
     pub neg_risk: bool,
     pub active: bool,
     pub end_date: Option<DateTime<Utc>>,
     pub liquidity: Decimal,
     pub volume: Decimal,
+    pub category: String,
+    pub tags: Vec<String>,
+}
+
+impl MarketInfo {
+    pub fn is_binary(&self) -> bool {
+        self.outcomes.len() == 2
+    }
+
+    pub fn is_multi_option(&self) -> bool {
+        self.outcomes.len() > 2
+    }
+
+    pub fn token_for_outcome(&self, outcome: &str) -> Option<&TokenId> {
+        self.outcomes
+            .iter()
+            .position(|o| o == outcome)
+            .map(|i| &self.token_ids[i])
+    }
+
+    pub fn price_for_outcome(&self, outcome: &str) -> Option<Decimal> {
+        self.outcome_prices.get(outcome).copied()
+    }
+
+    pub fn validate_probabilities(&self) -> bool {
+        let sum: Decimal = self.outcome_prices.values().sum();
+        (sum - Decimal::ONE).abs() < dec!(0.01)
+    }
+
+    pub fn market_type(&self) -> MarketType {
+        if self.outcomes.len() == 2 {
+            if self.outcomes.contains(&"Yes".to_string()) {
+                let yes_idx = self.outcomes.iter().position(|o| o == "Yes").unwrap();
+                let no_idx = 1 - yes_idx;
+                MarketType::Binary {
+                    yes_token: self.token_ids[yes_idx].clone(),
+                    no_token: self.token_ids[no_idx].clone(),
+                }
+            } else {
+                MarketType::MultiOption {
+                    outcomes: self
+                        .outcomes
+                        .iter()
+                        .zip(self.token_ids.iter())
+                        .map(|(o, t)| (o.clone(), t.clone()))
+                        .collect(),
+                }
+            }
+        } else {
+            MarketType::MultiOption {
+                outcomes: self
+                    .outcomes
+                    .iter()
+                    .zip(self.token_ids.iter())
+                    .map(|(o, t)| (o.clone(), t.clone()))
+                    .collect(),
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub fn binary_test(id: &str) -> Self {
+        let mut outcome_prices = std::collections::HashMap::new();
+        outcome_prices.insert("Yes".to_string(), dec!(0.5));
+        outcome_prices.insert("No".to_string(), dec!(0.5));
+
+        Self {
+            id: MarketId(id.into()),
+            question: format!("Market {}?", id),
+            slug: id.into(),
+            outcomes: vec!["Yes".into(), "No".into()],
+            token_ids: vec![
+                TokenId(format!("{}-yes", id)),
+                TokenId(format!("{}-no", id)),
+            ],
+            outcome_prices,
+            condition_id: format!("cond-{}", id),
+            neg_risk: false,
+            active: true,
+            end_date: None,
+            liquidity: dec!(10000),
+            volume: dec!(50000),
+            category: "Test".into(),
+            tags: vec!["test".into()],
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MarketType {
+    Binary {
+        yes_token: TokenId,
+        no_token: TokenId,
+    },
+    MultiOption {
+        outcomes: Vec<(String, TokenId)>,
+    },
 }
 
 /// Single orderbook price level.
@@ -200,9 +312,7 @@ impl OrderbookSnapshot {
 
     pub fn mid_price(&self) -> Option<Decimal> {
         match (self.best_bid(), self.best_ask()) {
-            (Some(bid), Some(ask)) => {
-                Some((bid.price + ask.price) / Decimal::TWO)
-            }
+            (Some(bid), Some(ask)) => Some((bid.price + ask.price) / Decimal::TWO),
             _ => None,
         }
     }

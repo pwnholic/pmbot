@@ -145,6 +145,8 @@ impl Strategy for MarketMaker {
             None => return Vec::new(),
         };
 
+        let outcome = snap.info.outcomes.first().cloned().unwrap_or_default();
+
         // Check refresh interval.
         if let Some(last) = self.last_quote_time
             && last.elapsed() < self.refresh_interval
@@ -192,6 +194,7 @@ impl Strategy for MarketMaker {
                     strategy: "market_maker",
                     market_id: market_id.clone(),
                     token_id: token_id.clone(),
+                    outcome: outcome.clone(),
                     side: Side::Buy,
                     size: self.quote_size,
                     price: Some(bid_price),
@@ -206,6 +209,7 @@ impl Strategy for MarketMaker {
                     strategy: "market_maker",
                     market_id: market_id.clone(),
                     token_id,
+                    outcome: outcome.clone(),
                     side: Side::Sell,
                     size: self.quote_size,
                     price: Some(ask_price),
@@ -224,6 +228,7 @@ impl Strategy for MarketMaker {
                         strategy: "market_maker",
                         market_id: market_id.clone(),
                         token_id,
+                        outcome: outcome.clone(),
                         side: Side::Sell,
                         size: self.quote_size,
                         price: Some(ask_price),
@@ -238,6 +243,7 @@ impl Strategy for MarketMaker {
                         strategy: "market_maker",
                         market_id: market_id.clone(),
                         token_id,
+                        outcome: outcome.clone(),
                         side: Side::Buy,
                         size: self.quote_size,
                         price: Some(bid_price),
@@ -372,6 +378,7 @@ impl Strategy for MarketMaker {
             wins: 0,
             losses: 0,
             total_pnl: Decimal::ZERO,
+            pnl_history: Vec::new(),
             custom: vec![
                 ("spread_bps", self.spread_bps.to_string()),
                 ("inventory", self.current_inventory.to_string()),
@@ -432,6 +439,9 @@ mod tests {
                     end_date: None,
                     liquidity: dec!(10000),
                     volume: dec!(50000),
+            outcome_prices: std::collections::HashMap::new(),
+            category: "Test".into(),
+            tags: vec!["test".into()],
                 },
                 book: Arc::new(book),
                 mid_price,

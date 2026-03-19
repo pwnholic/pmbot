@@ -54,8 +54,13 @@ impl MarketActor {
 
         let tracker = PriceTracker::new(1000);
 
+        // Default market type for rotation (use first category)
+        let default_market_type = config.categories.first()
+            .cloned()
+            .unwrap_or_else(|| "crypto".into());
+
         let rotator = MarketRotator::new(
-            config.market_type.clone(),
+            default_market_type,
             config.no_trade_zone_secs,
             config.rotation_lookahead_secs,
         );
@@ -83,19 +88,25 @@ impl MarketActor {
         let filters = DiscoveryFilters {
             min_liquidity: Decimal::from(self.config.min_liquidity),
             min_volume: Decimal::from(self.config.min_volume),
+            categories: self.config.categories.clone(),
             tags: self.config.tags.clone(),
-            market_type: self.config.market_type.clone(),
-            keyword: self.config.keyword.clone(),
+            search_queries: self.config.search_queries.clone(),
+            exclude_tags: self.config.exclude_tags.clone(),
             active_only: true,
         };
 
         let raw_markets = discovery.discover(&filters).await?;
-        let markets = self.viable_markets(raw_markets);
+        let markets = self.viable_markets(raw_markets.clone());
 
         if markets.is_empty() {
             warn!("no viable markets available matching filters (all expired or missing end_date)");
             return Err(anyhow::anyhow!("no viable markets available"));
         }
+
+        // Emit discovered markets event for TUI search
+        let _ = self.events_tx.send(MarketEvent::MarketsDiscovered {
+            markets: raw_markets.clone(),
+        });
 
         // Pick the market with the nearest expiry (for time-bounded strategies like 5min markets)
         // This ensures we trade the market that will expire soonest, maximizing edge
@@ -152,13 +163,19 @@ impl MarketActor {
                         let filters = crate::discovery::DiscoveryFilters {
                             min_liquidity: rust_decimal::Decimal::from(self.config.min_liquidity),
                             min_volume: rust_decimal::Decimal::from(self.config.min_volume),
+                            categories: self.config.categories.clone(),
                             tags: self.config.tags.clone(),
-                            market_type: self.config.market_type.clone(),
-                            keyword: self.config.keyword.clone(),
+                            search_queries: self.config.search_queries.clone(),
+                            exclude_tags: self.config.exclude_tags.clone(),
                             active_only: true,
                         };
                         match discovery.discover(&filters).await {
                             Ok(raw_markets) => {
+                                // Emit discovered markets for TUI search
+                                let _ = self.events_tx.send(MarketEvent::MarketsDiscovered {
+                                    markets: raw_markets.clone(),
+                                });
+
                                 // Filter to viable (non-expired, with end_date) markets
                                 let mut viable = self.viable_markets(raw_markets);
                                 // Sort by time-to-expiry ascending (nearest expiry first)
@@ -227,7 +244,7 @@ impl MarketActor {
                                     bid_updates,
                                     ask_updates,
                                 } => {
-                                    self.book.apply_delta(&bid_updates, &ask_updates, ts);
+                                    self.book.apply_delta_no_token(&bid_updates, &ask_updates, ts);
                                 }
                             }
 
@@ -330,22 +347,30 @@ mod tests {
     use super::*;
     use crate::discovery::MockDiscovery;
     use chrono::Utc;
+    use std::collections::HashMap;
     use pmbot_core::types::MarketInfo;
     use rust_decimal_macros::dec;
 
     fn make_market(id: &str) -> MarketInfo {
+        let mut outcome_prices = HashMap::new();
+        outcome_prices.insert("Yes".to_string(), dec!(0.5));
+        outcome_prices.insert("No".to_string(), dec!(0.5));
+        
         MarketInfo {
             id: MarketId(id.into()),
             question: format!("Market {id}?"),
             slug: id.into(),
             outcomes: vec!["Yes".into(), "No".into()],
             token_ids: vec![TokenId(format!("{id}-yes")), TokenId(format!("{id}-no"))],
+            outcome_prices,
             condition_id: format!("cond-{id}"),
             neg_risk: false,
             active: true,
             end_date: Some(Utc::now() + chrono::Duration::hours(1)),
             liquidity: dec!(10000),
             volume: dec!(50000),
+            category: "Test".into(),
+            tags: vec!["test".into()],
         }
     }
 

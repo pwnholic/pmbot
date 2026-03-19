@@ -1,8 +1,10 @@
 use std::collections::VecDeque;
 
 use chrono::{DateTime, Utc};
+use pmbot_core::types::MarketInfo;
 use rust_decimal::Decimal;
 
+use crate::widgets::{filter_menu::FilterMenu, market_search::MarketSearchState};
 use pmbot_core::messages::{StrategyMetrics, WorldState};
 
 /// A log entry for the scrolling log panel.
@@ -19,13 +21,9 @@ pub struct LogEntry {
 /// Severity level for log entries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogLevel {
-    /// Informational message.
     Info,
-    /// Warning condition.
     Warn,
-    /// Error condition.
     Error,
-    /// Trade execution event.
     Trade,
 }
 
@@ -48,6 +46,24 @@ pub struct App {
     pub running: bool,
     /// Number of ticks processed.
     pub tick_count: u64,
+    /// Current view mode.
+    pub mode: AppMode,
+    /// Market search state.
+    pub search_state: MarketSearchState,
+    /// Filter menu state.
+    pub filter_menu: FilterMenu,
+}
+
+/// Application view mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AppMode {
+    /// Main dashboard view.
+    #[default]
+    Dashboard,
+    /// Market search view.
+    Search,
+    /// Filter menu view.
+    Filter,
 }
 
 impl App {
@@ -61,6 +77,9 @@ impl App {
             pnl_history: VecDeque::with_capacity(120),
             running: true,
             tick_count: 0,
+            mode: AppMode::Dashboard,
+            search_state: MarketSearchState::new(),
+            filter_menu: FilterMenu::new(),
         }
     }
 
@@ -104,6 +123,68 @@ impl App {
     pub fn is_running(&self) -> bool {
         self.running
     }
+
+    /// Apply filters from FilterMenu to markets from WorldState.
+    /// Updates search_state with filtered markets.
+    pub fn apply_filters_to_markets(&mut self) {
+        let filters = self.filter_menu.to_filters();
+
+        let selected_category = self.filter_menu.current_category().to_lowercase();
+
+        // Use discovered_markets if available, otherwise fall back to active markets
+        let all_markets: Vec<MarketInfo> = if let Some(ref world) = self.world {
+            if world.discovered_markets.is_empty() {
+                // Fall back to active markets
+                world.markets.values().map(|s| s.info.clone()).collect()
+            } else {
+                world.discovered_markets.clone()
+            }
+        } else {
+            Vec::new()
+        };
+
+        let markets: Vec<MarketInfo> = all_markets
+            .into_iter()
+            .filter(|market| {
+                // Filter by category (skip if "all")
+                if selected_category != "all" {
+                    let info_category = market.category.to_lowercase();
+                    if info_category != selected_category {
+                        // Also check tags for category match
+                        let in_tags = market
+                            .tags
+                            .iter()
+                            .any(|t: &String| t.to_lowercase() == selected_category);
+                        if !in_tags {
+                            return false;
+                        }
+                    }
+                }
+
+                // Filter by min_liquidity
+                if filters.min_liquidity > Decimal::ZERO && market.liquidity < filters.min_liquidity
+                {
+                    return false;
+                }
+
+                // Filter by exclude_tags
+                for tag in &filters.exclude_tags {
+                    let tag_lower = tag.to_lowercase();
+                    if market
+                        .tags
+                        .iter()
+                        .any(|t: &String| t.to_lowercase() == tag_lower)
+                    {
+                        return false;
+                    }
+                }
+
+                true
+            })
+            .collect();
+
+        self.search_state.set_markets(markets);
+    }
 }
 
 #[cfg(test)]
@@ -116,6 +197,7 @@ mod tests {
         WorldState {
             active_market_id: None,
             markets: HashMap::new(),
+            discovered_markets: Vec::new(),
             positions: Vec::new(),
             open_orders: Vec::new(),
             balance: dec!(1000),
@@ -193,6 +275,7 @@ mod tests {
             wins: 0,
             losses: 0,
             total_pnl: rust_decimal::Decimal::ZERO,
+            pnl_history: Vec::new(),
             custom: vec![],
         }];
         app.update_metrics(m1);
@@ -208,6 +291,7 @@ mod tests {
                 wins: 0,
                 losses: 0,
                 total_pnl: rust_decimal::Decimal::ZERO,
+                pnl_history: Vec::new(),
                 custom: vec![],
             },
             StrategyMetrics {
@@ -219,6 +303,7 @@ mod tests {
                 wins: 0,
                 losses: 0,
                 total_pnl: rust_decimal::Decimal::ZERO,
+                pnl_history: Vec::new(),
                 custom: vec![],
             },
         ];

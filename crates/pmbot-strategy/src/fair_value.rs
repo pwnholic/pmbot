@@ -208,6 +208,8 @@ impl Strategy for FairValue {
                         None => return Vec::new(),
                     };
 
+                    let outcome = snap.info.outcomes.first().cloned().unwrap_or_default();
+
                     self.state = FairValueState::Entering {
                         signal_id,
                         entry_fv: fair_value,
@@ -218,6 +220,7 @@ impl Strategy for FairValue {
                         strategy: "fair_value",
                         market_id: market_id.clone(),
                         token_id,
+                        outcome,
                         side,
                         size: dec!(1),
                         price: snap.mid_price,
@@ -338,6 +341,7 @@ impl Strategy for FairValue {
             wins: 0,
             losses: 0,
             total_pnl: Decimal::ZERO,
+            pnl_history: Vec::new(),
             custom: vec![
                 ("vol_multiplier", format!("{:.2}", self.vol_multiplier)),
                 (
@@ -401,6 +405,9 @@ mod tests {
             end_date: secs_to_expiry.map(|s| ts(s)),
             liquidity: dec!(10000),
             volume: dec!(5000),
+            outcome_prices: std::collections::HashMap::new(),
+            category: "Test".into(),
+            tags: vec!["test".into()],
         };
 
         markets.insert(
@@ -435,9 +442,9 @@ mod tests {
         let fv = FairValue::binary_call_fv(50000.0, 50000.0, 0.50, 1.0);
         assert!(fv > 0.39 && fv < 0.41);
 
-        // Spot far above strike => fv ~ 1.0
+        // Spot far above strike => fv ~ 0.87 (Phi(1.136) for ln(2)-0.125/0.5)
         let fv = FairValue::binary_call_fv(100000.0, 50000.0, 0.50, 1.0);
-        assert!(fv > 0.99);
+        assert!(fv > 0.85 && fv < 0.90);
 
         // Spot far below strike => fv ~ 0.0
         let fv = FairValue::binary_call_fv(10000.0, 50000.0, 0.50, 1.0);
@@ -535,6 +542,9 @@ mod tests {
                 end_date: None,
                 liquidity: dec!(10000),
                 volume: dec!(5000),
+                outcome_prices: std::collections::HashMap::new(),
+                category: "Test".into(),
+                tags: vec!["test".into()],
             },
         );
         assert!(matches!(strat.state, FairValueState::Watching));

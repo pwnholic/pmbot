@@ -69,6 +69,7 @@ mod tests {
             id: PositionId::new(),
             market_id: MarketId(market_id.into()),
             token_id: TokenId("t1".into()),
+            outcome: "Yes".to_string(),
             strategy: "test",
             state: PositionState::Pending {
                 order_id: OrderId("o1".into()),
@@ -119,6 +120,7 @@ mod tests {
             id: PositionId::new(),
             market_id: MarketId("m1".into()),
             token_id: TokenId("t1".into()),
+            outcome: "Yes".to_string(),
             strategy: "test",
             state: PositionState::Pending {
                 order_id: OrderId("o1".into()),
@@ -135,10 +137,9 @@ mod tests {
             max_per_event: 2,
         };
         let positions = vec![make_open_position("m1", dec!(100))];
-        assert!(
-            risk.check_concentration(&positions, &MarketId("m1".into()))
-                .is_ok()
-        );
+        assert!(risk
+            .check_concentration(&positions, &MarketId("m1".into()))
+            .is_ok());
     }
 
     #[test]
@@ -163,9 +164,8 @@ mod tests {
         };
         let positions = vec![make_open_position("m1", dec!(100))];
         // Different market should be fine
-        assert!(
-            risk.check_concentration(&positions, &MarketId("m2".into()))
-                .is_ok()
-        );
+        assert!(risk
+            .check_concentration(&positions, &MarketId("m2".into()))
+            .is_ok());
     }
 }

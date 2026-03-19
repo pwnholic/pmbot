@@ -14,14 +14,16 @@ pub mod live;
 pub mod paper;
 pub mod rate_limit;
 pub mod reconciler;
+pub mod ws_orders;
 
 // Re-exports for convenience.
-pub use actor::{ExecutorActor, OrderExecutor};
+pub use actor::{ExecutorActor, OrderExecutor, ShutdownState};
 pub use lifecycle::{OrderState, TrackedOrder, TransitionError};
 pub use live::LiveExecutor;
 pub use paper::PaperExecutor;
 pub use rate_limit::{ApiRateLimiter, RateLimiter};
 pub use reconciler::Reconciler;
+pub use ws_orders::{OrderTrackerConfig, OrderUpdate};
 
 #[cfg(test)]
 mod tests {

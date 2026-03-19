@@ -22,7 +22,17 @@ encrypted_key.json
 /data/
 /reports/
 
+# Database files
+*.db
+*.db-wal
+*.db-shm
+
 # Kill switch
 /tmp/pmbot-kill
 
+# Logs
 logs/
+
+# Config (user-specific)
+config/config.yaml
+!config/default.yaml

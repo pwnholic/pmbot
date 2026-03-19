@@ -2,6 +2,7 @@
 //!
 //! Provides:
 //! - [`App`] — TUI application state
+//! - [`AppMode`] — View mode (Dashboard, Search, Filter)
 //! - [`AppLayout`] — adaptive grid layout
 //! - Widget modules for orderbook, positions, log, market, strategy, PnL
 
@@ -12,6 +13,6 @@ pub mod theme;
 pub mod ui;
 pub mod widgets;
 
-pub use app::{App, LogEntry, LogLevel};
+pub use app::{App, AppMode, LogEntry, LogLevel};
 pub use layout::AppLayout;
 pub use ui::draw;
