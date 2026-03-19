@@ -150,6 +150,13 @@ impl Strategy for NegRiskArb {
                             None => continue,
                         };
 
+                        let outcome = target_snap
+                            .info
+                            .outcomes
+                            .first()
+                            .cloned()
+                            .unwrap_or_default();
+
                         let signal_id = SignalId::new();
                         self.signals_generated += 1;
                         let entry_price = target_snap.mid_price.unwrap_or(Decimal::ZERO);
@@ -174,6 +181,7 @@ impl Strategy for NegRiskArb {
                             strategy: "negrisk_arb",
                             market_id: (*target_id).clone(),
                             token_id,
+                            outcome,
                             side: Side::Sell,
                             size: dec!(1),
                             price: target_snap.mid_price,
@@ -191,6 +199,13 @@ impl Strategy for NegRiskArb {
                             Some(tid) => tid.clone(),
                             None => continue,
                         };
+
+                        let outcome = target_snap
+                            .info
+                            .outcomes
+                            .first()
+                            .cloned()
+                            .unwrap_or_default();
 
                         let signal_id = SignalId::new();
                         self.signals_generated += 1;
@@ -216,6 +231,7 @@ impl Strategy for NegRiskArb {
                             strategy: "negrisk_arb",
                             market_id: (*target_id).clone(),
                             token_id,
+                            outcome,
                             side: Side::Buy,
                             size: dec!(1),
                             price: target_snap.mid_price,
@@ -346,6 +362,7 @@ impl Strategy for NegRiskArb {
             wins: 0,
             losses: 0,
             total_pnl: Decimal::ZERO,
+            pnl_history: Vec::new(),
             custom: vec![(
                 "threshold",
                 format!("{:.2}%", self.sum_deviation_threshold * dec!(100)),
@@ -408,6 +425,9 @@ mod tests {
                         end_date: None,
                         liquidity: dec!(10000),
                         volume: dec!(50000),
+            outcome_prices: std::collections::HashMap::new(),
+            category: "Test".into(),
+            tags: vec!["test".into()],
                     },
                     book: Arc::new(book),
                     mid_price: Some(*price),
@@ -626,6 +646,9 @@ mod tests {
             end_date: None,
             liquidity: dec!(10000),
             volume: dec!(50000),
+            outcome_prices: std::collections::HashMap::new(),
+            category: "Test".into(),
+            tags: vec!["test".into()],
         };
         strat.on_market_change(&MarketId("m-a".into()), &new_info);
         assert!(matches!(strat.state, NegRiskState::Watching));

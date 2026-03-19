@@ -5,13 +5,17 @@ edition.workspace = true
 
 [dependencies]
 pmbot-core.workspace = true
+pmbot-market.workspace = true
+pmbot-db.workspace = true
 tokio.workspace = true
 ratatui.workspace = true
 crossterm.workspace = true
 tracing.workspace = true
 anyhow.workspace = true
 rust_decimal.workspace = true
+rust_decimal_macros.workspace = true
 chrono.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 rust_decimal_macros.workspace = true

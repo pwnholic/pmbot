@@ -43,6 +43,7 @@ pub struct TrackedPosition {
     pub id: PositionId,
     pub market_id: MarketId,
     pub token_id: TokenId,
+    pub outcome: String,
     pub strategy: &'static str,
     pub state: PositionState,
     pub signal_id: SignalId,
@@ -68,6 +69,7 @@ impl TrackedPosition {
     pub fn new(
         market_id: MarketId,
         token_id: TokenId,
+        outcome: String,
         strategy: &'static str,
         order_id: OrderId,
         signal_id: SignalId,
@@ -76,6 +78,7 @@ impl TrackedPosition {
             id: PositionId::new(),
             market_id,
             token_id,
+            outcome,
             strategy,
             state: PositionState::Pending { order_id },
             signal_id,
@@ -249,6 +252,7 @@ mod tests {
         TrackedPosition::new(
             MarketId("market-1".into()),
             TokenId("token-1".into()),
+            "Yes".to_string(),
             "test_strategy",
             OrderId("order-1".into()),
             SignalId::new(),

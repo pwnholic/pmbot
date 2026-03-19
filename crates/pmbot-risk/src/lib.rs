@@ -6,7 +6,7 @@ pub mod limits;
 pub mod portfolio;
 pub mod position;
 
-pub use actor::RiskActor;
+pub use actor::{RiskActor, ShutdownState};
 pub use kelly::fractional_kelly;
 pub use limits::CircuitBreaker;
 pub use portfolio::PortfolioRisk;

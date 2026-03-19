@@ -96,15 +96,15 @@ mod tests {
     use tempfile::TempDir;
 
     fn create_test_config(tmp_dir: &TempDir) -> PathBuf {
-        let path = tmp_dir.path().join("config.toml");
+        let path = tmp_dir.path().join("config.yaml");
         let mut f = std::fs::File::create(&path).unwrap();
         f.write_all(
             b"
-[general]
-mode = \"paper\"
+general:
+  mode: \"paper\"
 
-[risk]
-bankroll = 1000
+risk:
+  bankroll: 1000
 ",
         )
         .unwrap();
@@ -117,26 +117,23 @@ bankroll = 1000
         let path = create_test_config(&tmp_dir);
 
         // Keep watcher alive during test
-        let (watcher, mut rx) = ConfigWatcher::new(path.clone(), Duration::from_millis(100)).unwrap();
+        let (_watcher, mut rx) = ConfigWatcher::new(path.clone(), Duration::from_millis(100)).unwrap();
 
-        // Modify the config file
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        let mut f = std::fs::File::create(&path).unwrap();
-        f.write_all(
-            b"
-[general]
-mode = \"live\"
+        // Wait for watcher to be ready
+        tokio::time::sleep(Duration::from_millis(300)).await;
 
-[risk]
-bankroll = 2000
-",
-        )
-        .unwrap();
-        drop(f);
+        // Modify the config file (overwrite in place)
+        let content = r#"
+general:
+  mode: "live"
+
+risk:
+  bankroll: 2000
+"#;
+        std::fs::write(&path, content).unwrap();
 
         // Wait for the watcher to detect the change
-        let result = tokio::time::timeout(Duration::from_secs(5), rx.recv())
-            .await;
+        let result = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await;
 
         // Verify watcher is still alive
         match result {
@@ -151,8 +148,6 @@ bankroll = 2000
             Ok(Err(e)) => panic!("channel error: {}", e),
             Err(_) => {
                 // Timeout - this can happen on slow systems, but watcher should still work
-                // Keep watcher alive to prevent premature drop
-                drop(watcher);
             }
         }
     }

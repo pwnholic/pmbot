@@ -8,6 +8,49 @@ use pmbot_core::messages::StrategyMetrics;
 
 use crate::theme;
 
+/// Render a sparkline from PnL history.
+/// Returns a string with Unicode block characters.
+fn render_sparkline(history: &[rust_decimal::Decimal], width: usize) -> String {
+    if history.is_empty() || width == 0 {
+        return String::new();
+    }
+
+    // Get the range for normalization
+    let min = history
+        .iter()
+        .fold(rust_decimal::Decimal::MAX, |a, &b| a.min(b));
+    let max = history
+        .iter()
+        .fold(rust_decimal::Decimal::MIN, |a, &b| a.max(b));
+
+    // If all values are the same, return flat line
+    if min == max {
+        return "─".repeat(width.min(history.len()));
+    }
+
+    // Sparkline characters (from lowest to highest)
+    const SPARK_CHARS: &[char] = &['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+
+    // Sample history to fit width
+    let sampled: Vec<_> = if history.len() <= width {
+        history.to_vec()
+    } else {
+        // Take the last `width` values
+        history[history.len() - width..].to_vec()
+    };
+
+    let range = max - min;
+    sampled
+        .iter()
+        .map(|&v| {
+            let normalized = ((v - min) / range).try_into().unwrap_or(0.5f64);
+            let idx = ((normalized * (SPARK_CHARS.len() - 1) as f64).round() as usize)
+                .min(SPARK_CHARS.len() - 1);
+            SPARK_CHARS[idx]
+        })
+        .collect::<String>()
+}
+
 /// Widget that renders strategy status information.
 pub struct StrategyWidget<'a> {
     metrics: &'a [StrategyMetrics],
@@ -95,6 +138,20 @@ impl Widget for StrategyWidget<'_> {
                     Style::default().fg(pnl_color),
                 ),
             ]));
+
+            // Sparkline (PnL history) - only if we have history
+            if !m.pnl_history.is_empty() {
+                let sparkline = render_sparkline(&m.pnl_history, 20);
+                let spark_color = if m.total_pnl >= rust_decimal::Decimal::ZERO {
+                    theme::GREEN
+                } else {
+                    theme::RED
+                };
+                lines.push(Line::from(vec![
+                    Span::styled("  trend:", theme::label()),
+                    Span::styled(format!(" {}", sparkline), Style::default().fg(spark_color)),
+                ]));
+            }
 
             // Custom fields (compact)
             for (key, val) in &m.custom {

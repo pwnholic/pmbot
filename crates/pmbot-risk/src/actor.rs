@@ -88,6 +88,7 @@ impl RiskActor {
                 strategy,
                 market_id,
                 token_id,
+                outcome,
                 side,
                 size: _size,
                 price,
@@ -100,6 +101,7 @@ impl RiskActor {
                     strategy,
                     market_id: market_id.clone(),
                     token_id: token_id.clone(),
+                    outcome: outcome.clone(),
                     side,
                     size: _size,
                     price,
@@ -157,6 +159,7 @@ impl RiskActor {
                 let pos = TrackedPosition::new(
                     market_id.clone(),
                     token_id.clone(),
+                    outcome.clone(),
                     strategy,
                     order_id_placeholder,
                     id,
@@ -480,6 +483,7 @@ impl RiskActor {
                     id: tp.id,
                     market_id: tp.market_id.clone(),
                     token_id: tp.token_id.clone(),
+                    outcome: tp.outcome.clone(),
                     strategy: tp.strategy,
                     side: *side,
                     entry_price: *entry_price,
@@ -499,6 +503,7 @@ impl RiskActor {
                     id: tp.id,
                     market_id: tp.market_id.clone(),
                     token_id: tp.token_id.clone(),
+                    outcome: tp.outcome.clone(),
                     strategy: tp.strategy,
                     side: Side::Buy, // default; actual side unknown until filled
                     entry_price: Decimal::ZERO,
@@ -652,6 +657,13 @@ fn default_world() -> WorldState {
     }
 }
 
+/// State captured during risk actor shutdown for persistence.
+#[derive(Debug, Default)]
+pub struct ShutdownState {
+    pub final_pnl: Decimal,
+    pub open_positions: Vec<TrackedPosition>,
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -699,6 +711,7 @@ mod tests {
             strategy: "test",
             market_id: MarketId("m1".into()),
             token_id: TokenId("t1".into()),
+            outcome: "Yes".to_string(),
             side: Side::Buy,
             size: dec!(100),
             price: Some(price),
@@ -733,6 +746,7 @@ mod tests {
             strategy: "test",
             market_id: MarketId("m1".into()),
             token_id: TokenId("t1".into()),
+            outcome: "Yes".to_string(),
             side: Side::Buy,
             size: dec!(100),
             price: Some(dec!(0.50)),
@@ -760,6 +774,7 @@ mod tests {
             strategy: "test",
             market_id: MarketId("m1".into()),
             token_id: TokenId("t1".into()),
+            outcome: "Yes".to_string(),
             side: Side::Buy,
             size: dec!(100),
             price: None, // no price → Market order
@@ -805,6 +820,7 @@ mod tests {
             strategy: "test",
             market_id: MarketId("m1".into()),
             token_id: TokenId("t1".into()),
+            outcome: "Yes".to_string(),
             side: Side::Buy,
             size: dec!(100),
             price: Some(dec!(0.50)),
@@ -840,6 +856,7 @@ mod tests {
             strategy: "test",
             market_id: MarketId("m1".into()),
             token_id: TokenId("t1".into()),
+            outcome: "Yes".to_string(),
             side: Side::Buy,
             size: dec!(100),
             price: Some(dec!(0.50)),
@@ -873,6 +890,7 @@ mod tests {
                 strategy: "test",
                 market_id: MarketId(format!("m{}", i)),
                 token_id: TokenId(format!("t{}", i)),
+                outcome: "Yes".to_string(),
                 side: Side::Buy,
                 size: dec!(10),
                 price: Some(dec!(0.50)),
@@ -900,6 +918,7 @@ mod tests {
             strategy: "test",
             market_id: MarketId("m4".into()),
             token_id: TokenId("t4".into()),
+            outcome: "Yes".to_string(),
             side: Side::Buy,
             size: dec!(10),
             price: Some(dec!(0.50)),
@@ -974,6 +993,7 @@ mod tests {
             strategy: "test",
             market_id: MarketId("m1".into()),
             token_id: TokenId("t1".into()),
+            outcome: "Yes".to_string(),
             side: Side::Buy,
             size: dec!(100),
             price: Some(dec!(0.50)),

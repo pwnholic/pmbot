@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use rust_decimal::Decimal;
-use tracing::{debug, info, warn};
+use tracing::info;
 
 use polymarket_client_sdk::gamma::{self, types::request::MarketsRequest};
 
@@ -59,114 +59,86 @@ impl Default for GammaDiscovery {
 #[async_trait]
 impl MarketDiscovery for GammaDiscovery {
     async fn discover(&self, filters: &DiscoveryFilters) -> Result<Vec<MarketInfo>> {
-        // Check if we should use slug-based discovery for BTC 5-minute markets.
-        let is_btc_5m = filters.keyword.to_lowercase().contains("btc")
-            && (filters.market_type.contains("5m") || filters.market_type.contains("5min"));
-
-        let raw_markets = if is_btc_5m {
-            // Slug-based discovery: compute candidate slugs and query directly.
-            let slugs = Self::generate_btc_5m_slugs(6); // current + 6 upcoming windows
-
-            info!(
-                slug_count = slugs.len(),
-                first = %slugs.first().unwrap_or(&String::new()),
-                "querying Gamma API with computed BTC 5m slugs"
-            );
-
+        let mut all_markets = Vec::new();
+        let mut seen_ids = std::collections::HashSet::new();
+        
+        // 1. Discover by categories
+        for category in &filters.categories {
             let request = MarketsRequest::builder()
-                .slug(slugs)
-                .closed(false)
-                .build();
-
-            self.client
-                .markets(&request)
-                .await
-                .context("failed to fetch BTC 5m markets from Gamma API")?
-        } else {
-            // Fallback: generic filtered query for other market types.
-            let request = MarketsRequest::builder()
-                .limit(200)
+                .limit(100)
                 .liquidity_num_min(filters.min_liquidity)
                 .volume_num_min(filters.min_volume)
-                .closed(false)
+                .closed(!filters.active_only)
                 .build();
-
-            let markets = self
-                .client
+            
+            let markets = self.client
                 .markets(&request)
                 .await
                 .context("failed to fetch markets from Gamma API")?;
-
-            markets
-        };
-
-        debug!(raw_count = raw_markets.len(), "raw markets from Gamma API");
-
-        let mut results = Vec::new();
-
-        for market in &raw_markets {
-            let info = match map_gamma_market(market) {
-                Ok(info) => info,
-                Err(e) => {
-                    debug!(id = %market.id, error = %e, "skipping malformed market");
-                    continue;
-                }
-            };
-
-            // Apply remaining filters not handled by API query params.
-            if filters.active_only && !info.active {
-                continue;
-            }
-
-            // For generic (non-slug) discovery, apply keyword and market_type filters
-            if !is_btc_5m {
-                // Filter by market_type (e.g., "5min", "15min") in slug
-                if !filters.market_type.is_empty()
-                    && !filters.market_type.to_lowercase().contains("all")
-                {
-                    let slug_lower = info.slug.to_lowercase();
-                    let market_type_lower = filters.market_type.to_lowercase();
-                    if !slug_lower.contains(&market_type_lower) {
-                        continue;
-                    }
-                }
-
-                // Filter by keyword (e.g., "BTC", "ETH")
-                if !filters.keyword.is_empty() {
-                    let slug_lower = info.slug.to_lowercase();
-                    let question_lower = info.question.to_lowercase();
-                    let keyword_lower = filters.keyword.to_lowercase();
-                    if !slug_lower.contains(&keyword_lower)
-                        && !question_lower.contains(&keyword_lower)
-                    {
-                        continue;
+            
+            for market in markets {
+                if seen_ids.insert(market.id.clone()) {
+                    if let Ok(info) = map_gamma_market(&market) {
+                        // Filter by category (match against market tags if available)
+                        if let Some(ref tags) = market.tags {
+                            if tags.iter().any(|t| {
+                                t.id.to_lowercase() == category.to_lowercase()
+                            }) {
+                                all_markets.push(info);
+                                continue;
+                            }
+                        }
+                        // If no tags, include anyway (API already filters)
+                        all_markets.push(info);
                     }
                 }
             }
-
-            // Skip markets with very low liquidity (accepting orders but nearly empty)
-            if info.liquidity < filters.min_liquidity {
-                debug!(
-                    slug = %info.slug,
-                    liquidity = %info.liquidity,
-                    min = %filters.min_liquidity,
-                    "skipping low-liquidity market"
-                );
-                continue;
+        }
+        
+        // 2. Discover by search queries
+        for query in &filters.search_queries {
+            let request = MarketsRequest::builder()
+                .slug(vec![query.clone()])
+                .limit(50)
+                .closed(!filters.active_only)
+                .build();
+            
+            let markets = self.client
+                .markets(&request)
+                .await
+                .context("failed to fetch markets from Gamma API")?;
+            
+            for market in markets {
+                if seen_ids.insert(market.id.clone()) {
+                    if let Ok(info) = map_gamma_market(&market) {
+                        all_markets.push(info);
+                    }
+                }
             }
-
-            results.push(info);
         }
-
-        info!(count = results.len(), "discovered markets from Gamma API");
-
-        if results.is_empty() && is_btc_5m {
-            warn!(
-                "no BTC 5m markets found - this may mean markets are between creation cycles"
-            );
+        
+        // 3. Apply exclude_tags filter
+        if !filters.exclude_tags.is_empty() {
+            all_markets.retain(|m| {
+                // Check if market question/slug contains any excluded tags
+                let text = format!("{} {}", m.question.to_lowercase(), m.slug.to_lowercase());
+                !filters.exclude_tags.iter().any(|tag| text.contains(&tag.to_lowercase()))
+            });
         }
-
-        Ok(results)
+        
+        // 4. Filter by liquidity and volume
+        all_markets.retain(|m| {
+            m.liquidity >= filters.min_liquidity && m.volume >= filters.min_volume
+        });
+        
+        // 5. Filter by active_only
+        if filters.active_only {
+            all_markets.retain(|m| m.active);
+        }
+        
+        info!(count = all_markets.len(), "discovered markets from Gamma API");
+        
+        Ok(all_markets)
     }
 }
 
@@ -194,6 +166,24 @@ fn map_gamma_market(
     let volume = market.volume.unwrap_or(Decimal::ZERO);
     let active = market.active.unwrap_or(false);
     let neg_risk = market.neg_risk.unwrap_or(false);
+    
+    // Category from tags (first tag as category)
+    let category = market
+        .tags
+        .as_ref()
+        .and_then(|tags| tags.first().map(|t| t.id.clone()))
+        .unwrap_or_default();
+    
+    // All tags
+    let tags = market
+        .tags
+        .as_ref()
+        .map(|tags| tags.iter().map(|t| t.id.clone()).collect())
+        .unwrap_or_default();
+    
+    // Outcome prices: try to parse from market.outcome_prices if available
+    // For now, use empty HashMap as SDK may not expose this directly
+    let outcome_prices: std::collections::HashMap<String, Decimal> = std::collections::HashMap::new();
 
     Ok(MarketInfo {
         id: MarketId(market.id.clone()),
@@ -201,11 +191,14 @@ fn map_gamma_market(
         slug: market.slug.clone().unwrap_or_default(),
         outcomes,
         token_ids,
+        outcome_prices,
         condition_id,
         neg_risk,
         active,
         end_date,
         liquidity,
         volume,
+        category,
+        tags,
     })
 }

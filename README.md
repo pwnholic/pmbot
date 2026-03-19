@@ -1,6 +1,6 @@
 # Polymarket Trading Bot
 
-A high-performance algorithmic trading bot for Polymarket prediction markets, built with Rust and Tokio. Features real-time data integration, dynamic market discovery, multiple alpha strategies, and comprehensive risk management.
+A high-performance algorithmic trading bot for Polymarket prediction markets, built with Rust and Tokio. Features real-time data integration, dynamic market discovery, multiple alpha strategies, SQLite persistence, and comprehensive risk management.
 
 ## Features
 
@@ -10,15 +10,18 @@ A high-performance algorithmic trading bot for Polymarket prediction markets, bu
   - Binance WebSocket for spot price feeds (BTCUSDT)
   - Polymarket CLOB WebSocket for L2 orderbook streaming
   - Gamma API for automatic market discovery and rotation
+  - WebSocket order tracking for real-time fills
 
-- **Dynamic Market Rotation**
-  - Automatically selects markets nearest to expiry
-  - No-trade zones to prevent late entries
-  - Seamless transition between expiring and new markets
+- **Dynamic Market Discovery**
+  - Multi-category support: Politics, Sports, Crypto, Finance, Geopolitics
+  - Tag-based filtering and exclusion
+  - Liquidity-based market filtering
+  - Automatic rotation to nearest-expiry markets
 
 - **Risk Management**
   - Fractional Kelly criterion for position sizing
   - Circuit breakers (daily loss limit, max positions)
+  - Atomic kill switch for instant trading halt
   - Take-profit and stop-loss automation
   - Minimum order size enforcement ($1)
 
@@ -29,20 +32,29 @@ A high-performance algorithmic trading bot for Polymarket prediction markets, bu
   - **Book Imbalance**: Order-flow based entry signals
   - **Convergence**: Near-expiry probability convergence
   - **Market Maker**: Liquidity provision strategy
+  - **NegRisk Arb**: Negative risk arbitrage
 
-- **Execution**
-  - Paper mode for simulation with real market data
-  - Live mode with Polymarket SDK integration
-  - Automatic USDC balance fetching for live accounts
-  - Rate-limited API calls
+- **SQLite Persistence**
+  - Trade history with PnL tracking
+  - Open order state recovery
+  - Position persistence across restarts
+  - Strategy performance metrics
+  - Migration system with version tracking
 
 - **Terminal UI (TUI)**
-  - Tokyo Night color theme
-  - Real-time orderbook visualization
-  - Position tracking with TP/SL display
-  - Strategy performance metrics (trades, win rate, PnL)
-  - Market info with expiry countdown
-  - Auto-logging of position changes
+  - Market search with category filtering
+  - Float overlay filter menu
+  - Multi-option market view
+  - Strategy performance sparklines
+  - Trade history panel
+  - Real-time price updates
+  - Keyboard-driven navigation
+
+- **Robust Architecture**
+  - Actor supervision with automatic restart
+  - Graceful shutdown with order cancellation
+  - WebSocket reconnection logic
+  - Config hot-reload support
 
 ## Architecture
 
@@ -53,6 +65,7 @@ graph TD
         PWS[Polymarket WebSocket]
         GAM[Gamma API]
         CLOB[Polymarket CLOB API]
+        DB[(SQLite)]
     end
 
     subgraph Actors
@@ -81,6 +94,7 @@ graph TD
     SA -->|WorldState| TUI
 
     EA <-->|Orders/Fills| CLOB
+    EA <-->|Persistence| DB
 
     style FA fill:#7aa2f7
     style MA fill:#7dcfff
@@ -88,73 +102,39 @@ graph TD
     style RA fill:#f7768e
     style EA fill:#9ece6a
     style TUI fill:#e0af68
-```
-
-## Data Flow
-
-```mermaid
-sequenceDiagram
-    participant Market as Market Actor
-    participant Feed as Feed Actor
-    participant Strategy as Strategy Actor
-    participant Risk as Risk Actor
-    participant Executor as Executor Actor
-    participant TUI as TUI
-
-    Market->>Strategy: MarketEvent (orderbook update)
-    Feed->>Strategy: FeedEvent (spot price)
-
-    Strategy->>Strategy: Evaluate signals
-    Strategy->>Risk: Signal::Enter
-
-    Risk->>Risk: Check limits, size position
-    Risk->>Executor: ExecutableOrder
-
-    Executor->>Executor: Submit order
-    Executor->>Risk: ExecutionEvent::OrderFilled
-
-    Risk->>Risk: Update position, check TP/SL
-    Risk->>Strategy: PositionSnapshot
-    Strategy->>TUI: WorldState update
+    style DB fill:#f7768e
 ```
 
 ## Project Structure
 
-```mermaid
-graph LR
-    subgraph Crates
-        CORE[pmbot-core<br/>Types, Config, Messages]
-        MARKET[pmbot-market<br/>Discovery, Orderbook, WS]
-        FEED[pmbot-feed<br/>Binance, Volatility]
-        STRAT[pmbot-strategy<br/>Signals, WorldState]
-        RISK[pmbot-risk<br/>Kelly, Limits, Positions]
-        EXEC[pmbot-executor<br/>Orders, Live/Paper]
-        TUI[pmbot-tui<br/>Dashboard, Widgets]
-    end
-
-    CORE --> MARKET
-    CORE --> FEED
-    CORE --> STRAT
-    CORE --> RISK
-    CORE --> EXEC
-    CORE --> TUI
-
-    MARKET --> STRAT
-    FEED --> STRAT
-    STRAT --> RISK
-    RISK --> EXEC
-    STRAT --> TUI
+```
+polymarket-bot-rs/
+├── src/
+│   └── main.rs              # Entry point, actor orchestration
+├── crates/
+│   ├── pmbot-core/          # Shared types, config, messages
+│   ├── pmbot-market/        # Market discovery, orderbook, WebSocket
+│   ├── pmbot-feed/          # Binance price feeds, volatility
+│   ├── pmbot-strategy/      # Trading strategies, world state
+│   ├── pmbot-risk/          # Kelly sizing, limits, positions
+│   ├── pmbot-executor/      # Order lifecycle, live/paper execution
+│   ├── pmbot-db/            # SQLite persistence, migrations
+│   └── pmbot-tui/           # Terminal UI with widgets
+├── config/
+│   └── default.yaml         # Default configuration
+└── .env                     # Credentials (gitignored)
 ```
 
 | Crate            | Responsibility                                    |
-| ---------------- | ------------------------------------------------- |
+| ---------------- | -------------------------------------------------- |
 | `pmbot-core`     | Shared types, messages, config, math utilities    |
 | `pmbot-market`   | Market discovery, orderbook tracking, WebSocket   |
 | `pmbot-feed`     | Binance price feeds, volatility computation       |
-| `pmbot-strategy` | Signal generation, world state management         |
+| `pmbot-strategy` | Signal generation, world state management          |
 | `pmbot-risk`     | Kelly sizing, circuit breakers, position tracking |
-| `pmbot-executor` | Order lifecycle, Live/Paper execution             |
-| `pmbot-tui`      | Real-time terminal dashboard                      |
+| `pmbot-executor` | Order lifecycle, live/paper execution             |
+| `pmbot-db`       | SQLite persistence, trade history, migrations      |
+| `pmbot-tui`      | Real-time terminal dashboard with widgets          |
 
 ## Installation
 
@@ -185,153 +165,123 @@ PMBOT_PRIVATE_KEY=your_private_key_here
 POLY_SAFE_ADDRESS=0xYourSafeAddress  # Optional for Gnosis Safe wallets
 ```
 
-4. Configure `config/default.toml`:
+4. Configure `config/config.yaml` (copy from `config/default.yaml`):
 
-```toml
-[general]
-mode = "paper"  # or "live"
-strategies = ["fair_value", "lead_lag"]
+```yaml
+general:
+  mode: paper  # or live
+  strategies:
+    - fair_value
+    - lead_lag
+  data_dir: ./data
 
-[risk]
-bankroll = 1000.0              # Configurable; live mode fetches actual balance
-kelly_fraction = 0.15
-max_position_pct = 0.05
-max_positions = 5
-daily_loss_limit_pct = 0.05
-min_edge = 0.01                # Minimum 1% edge to trade
+risk:
+  bankroll: 1000.0
+  kelly_fraction: 0.15
+  max_position_pct: 0.05
+  max_positions: 5
+  daily_loss_limit_pct: 0.05
+  min_edge: 0.01
 ```
 
 ### Running
 
 ```bash
 # Paper mode (simulation with real market data)
-cargo run --release run --config config/default.toml --paper --tui
+make run
+
+# With TUI
+make run-tui
 
 # Live mode (real money)
-cargo run --release run --config config/default.toml --live --tui
+make run-live
+
+# View database
+make db-view
+
+# Kill switch
+make kill    # Stop trading
+make resume  # Resume trading
 ```
+
+### Makefile Commands
+
+| Command | Description |
+|---------|-------------|
+| `make build` | Build debug version |
+| `make build-release` | Build optimized release |
+| `make test` | Run tests |
+| `make run` | Run in paper mode |
+| `make run-tui` | Run with TUI interface |
+| `make run-live` | Run in live mode (real money) |
+| `make run-verbose` | Run with debug logging |
+| `make db-view` | View SQLite database contents |
+| `make db-setup` | Setup database directory |
+| `make kill` | Activate kill switch |
+| `make resume` | Deactivate kill switch |
+| `make clippy` | Run linter |
+| `make fmt` | Format code |
 
 ## Configuration Reference
 
 ### General Settings
 
-| Setting      | Type   | Description                                              |
-| ------------ | ------ | -------------------------------------------------------- |
-| `mode`       | string | `"paper"` or `"live"`                                    |
-| `log_level`  | string | Log verbosity: `trace`, `debug`, `info`, `warn`, `error` |
-| `strategies` | array  | List of active strategies                                |
+| Setting | Type | Description |
+|---------|------|-------------|
+| `mode` | string | `paper` or `live` |
+| `strategies` | array | List of active strategies |
+| `data_dir` | path | Directory for SQLite database |
 
 ### Risk Settings
 
-| Setting                  | Type  | Default | Description                                             |
-| ------------------------ | ----- | ------- | ------------------------------------------------------- |
-| `bankroll`               | float | 1000.0  | Starting capital (paper) or fetched from account (live) |
-| `kelly_fraction`         | float | 0.15    | Fraction of Kelly to use for sizing                     |
-| `max_position_pct`       | float | 0.05    | Max position as % of bankroll                           |
-| `max_positions`          | int   | 5       | Maximum concurrent positions                            |
-| `daily_loss_limit_pct`   | float | 0.05    | Stop trading if daily loss exceeds this                 |
-| `stop_loss_pct`          | float | 0.30    | Stop-loss threshold                                     |
-| `take_profit_multiplier` | float | 2.0     | TP = entry + (edge × multiplier)                        |
-| `min_edge`               | float | 0.01    | Minimum edge to generate signal                         |
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `bankroll` | float | 1000.0 | Starting capital (paper) or fetched from account (live) |
+| `kelly_fraction` | float | 0.15 | Fraction of Kelly to use for sizing |
+| `max_position_pct` | float | 0.05 | Max position as % of bankroll |
+| `max_positions` | int | 5 | Maximum concurrent positions |
+| `daily_loss_limit_pct` | float | 0.05 | Stop trading if daily loss exceeds this |
+| `stop_loss_pct` | float | 0.30 | Stop-loss threshold |
+| `take_profit_multiplier` | float | 2.0 | TP = entry + (edge × multiplier) |
+| `min_edge` | float | 0.01 | Minimum edge to generate signal |
 
-### Strategy Settings
+## TUI Keyboard Shortcuts
 
-Each strategy has its own section:
+### Dashboard
+| Key | Action |
+|-----|--------|
+| `/` | Open market search |
+| `f` | Open filter menu |
+| `q/Esc` | Quit |
 
-```toml
-[strategy.fair_value]
-enabled = true
-vol_multiplier = 1.0
-min_time_to_expiry_secs = 120
-min_activation_edge = 0.01
+### Market Search
+| Key | Action |
+|-----|--------|
+| `Esc` | Return to dashboard |
+| `/` | Focus search box |
+| `↑/↓` | Navigate markets |
+| `←/→` | Switch categories |
 
-[strategy.lead_lag]
-enabled = true
-lag_threshold = 0.005
-entry_delay_ms = 500
-exit_convergence_pct = 0.002
-```
+### Filter Menu
+| Key | Action |
+|-----|--------|
+| `←/→` | Switch tabs |
+| `↑/↓` | Navigate within tab |
+| `Enter` | Select/Edit field |
+| `Space` | Toggle strategy |
+| `a` | Apply filters |
+| `Esc` | Back to dashboard |
+| `d` | Remove last tag |
 
-## Strategies
+## Database Schema
 
-### Fair Value
+### Tables
 
-Computes theoretical binary option prices using Black-Scholes:
-
-- Uses BTC realized volatility from Binance
-- Calculates probability of BTC > strike at expiry
-- Enters when market price deviates from fair value by > `min_activation_edge`
-
-### Lead-Lag
-
-Momentum strategy based on BTC spot price movement:
-
-- Monitors BTC price changes over configurable window
-- Enters when BTC moves > `lag_threshold`
-- Direction matches expected market reaction
-
-### Flash Crash
-
-Mean-reversion on sudden price drops:
-
-- Monitors for rapid price declines > `drop_threshold`
-- Enters long when price stabilizes
-- Exits on recovery to `reversion_target`
-
-### Book Imbalance
-
-High-frequency signal based on orderbook liquidity:
-
-- Calculates imbalance ratio from bid/ask sizes
-- Enters when imbalance > `threshold` with momentum confirmation
-- Exits on imbalance reversal
-
-## Risk Management
-
-### Position Sizing
-
-Uses fractional Kelly criterion:
-
-```rust
-position_size = f_star * kelly_fraction * bankroll
-position_size = min(position_size, max_position_pct * bankroll)
-position_size = max(position_size, $1)  // Minimum order
-```
-
-### Take Profit / Stop Loss
-
-- TP calculated from entry price and edge
-- SL set to `stop_loss_pct` below entry
-- Automatically monitored and triggered by Risk Actor
-
-### Circuit Breaker
-
-- Halts trading if daily loss > `daily_loss_limit_pct`
-- Respects `kill_switch_path` file for manual stop
-- Enforces `max_positions` limit
-
-## Live Mode
-
-When running in live mode:
-
-1. Bot authenticates with Polymarket using your private key
-2. Fetches actual USDC balance from your account
-3. Places real orders on Polymarket CLOB
-4. All risk limits apply
-
-```mermaid
-flowchart LR
-    A[Start Live Mode] --> B[Load Private Key]
-    B --> C[Authenticate with CLOB]
-    C --> D[Fetch USDC Balance]
-    D --> E[Update Bankroll]
-    E --> F[Start Trading Loop]
-    F --> G{Signal?}
-    G -->|Entry Signal| H[Check Risk Limits]
-    H --> I[Submit Order]
-    I --> J[Monitor TP/SL]
-    G -->|No Signal| F
-```
+- **trades**: Trade history with PnL
+- **open_orders**: Active order state
+- **positions**: Current positions
+- **strategy_metrics**: Performance by strategy
+- **app_state**: Application state (migrations, last run)
 
 ## Development
 
@@ -347,24 +297,34 @@ cargo build --release
 cargo test --workspace
 ```
 
-### Code Structure
+### Running with Logging
 
+```bash
+RUST_LOG=debug cargo run --release -- run --paper
 ```
-polymarket-bot-rs/
-├── src/
-│   └── main.rs              # Entry point, actor orchestration
-├── crates/
-│   ├── pmbot-core/          # Shared types and config
-│   ├── pmbot-market/        # Market discovery and orderbook
-│   ├── pmbot-feed/          # External price feeds
-│   ├── pmbot-strategy/      # Trading strategies
-│   ├── pmbot-risk/          # Risk management
-│   ├── pmbot-executor/      # Order execution
-│   └── pmbot-tui/           # Terminal UI
-├── config/
-│   └── default.toml        # Default configuration
-└── .env                    # Credentials (gitignored)
-```
+
+## Recent Changes
+
+### v2.0.0
+
+- **YAML Configuration**: Migrated from TOML to YAML for better readability
+- **SQLite Persistence**: Added database for trade history and state recovery
+- **Multi-Category Discovery**: Markets can be filtered by category (Politics, Sports, etc.)
+- **Multi-Option Support**: Architecture supports N-outcome markets
+- **TUI Improvements**:
+  - Float overlay filter menu
+  - Market search with real-time filtering
+  - Category tabs for navigation
+  - Single-line keyboard shortcuts
+- **Bug Fixes**:
+  - Partial fill double-counting fix
+  - Reconciler integration on startup
+  - Config watcher hot-reload
+  - Kill switch atomic check (no I/O on every signal)
+- **Architecture**:
+  - Actor supervision with restart
+  - Graceful shutdown
+  - WebSocket reconnection logic
 
 ## License
 

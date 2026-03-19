@@ -8,6 +8,8 @@ pub const BG_HIGHLIGHT: Color = Color::Rgb(0x29, 0x2e, 0x42);
 pub const FG: Color = Color::Rgb(0xc0, 0xca, 0xf5);
 pub const FG_DIM: Color = Color::Rgb(0x56, 0x5f, 0x89);
 pub const BORDER: Color = Color::Rgb(0x3b, 0x42, 0x61);
+pub const WHITE: Color = Color::Rgb(0xff, 0xff, 0xff);
+pub const BLACK: Color = Color::Rgb(0x00, 0x00, 0x00);
 
 // ── Accent colors ──────────────────────────────────────────────
 pub const RED: Color = Color::Rgb(0xf7, 0x76, 0x8e);

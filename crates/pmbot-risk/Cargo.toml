@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 pmbot-core.workspace = true
+pmbot-db = { path = "../pmbot-db" }
 tokio.workspace = true
 tracing.workspace = true
 anyhow.workspace = true

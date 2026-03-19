@@ -8,6 +8,7 @@ members = [
     "crates/pmbot-risk",
     "crates/pmbot-executor",
     "crates/pmbot-tui",
+    "crates/pmbot-db",
 ]
 
 [workspace.package]
@@ -36,9 +37,10 @@ alloy = { version = "1.6", features = ["signers", "signer-local", "sol-types"] }
 # Serde
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+serde_yaml = "0.9"
 
 # Config
-figment = { version = "0.10", features = ["toml", "env"] }
+figment = { version = "0.10", features = ["yaml", "env"] }
 
 # Math
 rust_decimal = "1.40"
@@ -87,6 +89,7 @@ pmbot-strategy = { path = "crates/pmbot-strategy" }
 pmbot-risk = { path = "crates/pmbot-risk" }
 pmbot-executor = { path = "crates/pmbot-executor" }
 pmbot-tui = { path = "crates/pmbot-tui" }
+pmbot-db = { path = "crates/pmbot-db" }
 
 # Testing
 [workspace.dependencies.proptest]
@@ -110,6 +113,7 @@ pmbot-strategy.workspace = true
 pmbot-risk.workspace = true
 pmbot-executor.workspace = true
 pmbot-tui.workspace = true
+pmbot-db.workspace = true
 
 polymarket-client-sdk.workspace = true
 alloy.workspace = true

@@ -143,6 +143,8 @@ impl Strategy for Convergence {
                         None => continue,
                     };
 
+                    let outcome = snap.info.outcomes.first().cloned().unwrap_or_default();
+
                     let signal_id = SignalId::new();
                     self.signals_generated += 1;
 
@@ -165,6 +167,7 @@ impl Strategy for Convergence {
                         strategy: "convergence",
                         market_id: market_id.clone(),
                         token_id,
+                        outcome,
                         side: Side::Buy,
                         size: dec!(1),
                         price: Some(mid),
@@ -270,6 +273,7 @@ impl Strategy for Convergence {
             wins: 0,
             losses: 0,
             total_pnl: Decimal::ZERO,
+            pnl_history: Vec::new(),
             custom: vec![
                 (
                     "min_prob",
@@ -344,6 +348,9 @@ mod tests {
                     end_date,
                     liquidity: dec!(10000),
                     volume: dec!(50000),
+            outcome_prices: std::collections::HashMap::new(),
+            category: "Test".into(),
+            tags: vec!["test".into()],
                 },
                 book: Arc::new(book),
                 mid_price: Some(mid_price),
@@ -486,6 +493,9 @@ mod tests {
             end_date: None,
             liquidity: dec!(10000),
             volume: dec!(50000),
+            outcome_prices: std::collections::HashMap::new(),
+            category: "Test".into(),
+            tags: vec!["test".into()],
         };
         strat.on_market_change(&MarketId("m-conv".into()), &new_info);
         assert!(matches!(strat.state, ConvergenceState::Scanning));

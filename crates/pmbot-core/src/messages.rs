@@ -67,6 +67,7 @@ pub enum Signal {
         strategy: &'static str,
         market_id: MarketId,
         token_id: TokenId,
+        outcome: String,
         side: Side,
         size: Decimal,
         price: Option<Decimal>,
@@ -76,7 +77,7 @@ pub enum Signal {
     Exit {
         id: SignalId,
         strategy: &'static str,
-        signal_id: SignalId, // The ID of the original Enter signal
+        signal_id: SignalId,
         reason: ExitReason,
     },
     Amend {
@@ -91,6 +92,28 @@ pub enum Signal {
 }
 
 impl Signal {
+    pub fn binary_enter(
+        strategy: &'static str,
+        market_id: MarketId,
+        yes_token: TokenId,
+        size: Decimal,
+        price: Option<Decimal>,
+        edge: Decimal,
+    ) -> Self {
+        Signal::Enter {
+            id: SignalId::new(),
+            strategy,
+            market_id,
+            token_id: yes_token,
+            outcome: "Yes".to_string(),
+            side: Side::Buy,
+            size,
+            price,
+            edge,
+            confidence: Decimal::ONE,
+        }
+    }
+
     pub fn strategy_name(&self) -> &'static str {
         match self {
             Signal::Enter { strategy, .. } => strategy,
@@ -150,6 +173,10 @@ pub enum ExecutionEvent {
     },
     OrderPartialFill {
         order_id: OrderId,
+        signal_id: SignalId,
+        market_id: MarketId,
+        side: Side,
+        price: Decimal,
         filled: Decimal,
         remaining: Decimal,
     },
@@ -198,6 +225,7 @@ pub struct Position {
     pub id: PositionId,
     pub market_id: MarketId,
     pub token_id: TokenId,
+    pub outcome: String,
     pub strategy: &'static str,
     pub side: Side,
     pub entry_price: Decimal,
@@ -235,5 +263,24 @@ pub struct StrategyMetrics {
     pub wins: u64,
     pub losses: u64,
     pub total_pnl: Decimal,
+    /// Cumulative PnL history for sparkline (most recent first).
+    pub pnl_history: Vec<Decimal>,
     pub custom: Vec<(&'static str, String)>,
+}
+
+impl Default for StrategyMetrics {
+    fn default() -> Self {
+        Self {
+            name: "unknown",
+            state: "idle",
+            edge: None,
+            signals_generated: 0,
+            trades: 0,
+            wins: 0,
+            losses: 0,
+            total_pnl: Decimal::ZERO,
+            pnl_history: Vec::new(),
+            custom: Vec::new(),
+        }
+    }
 }

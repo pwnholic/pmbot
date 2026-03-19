@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use anyhow::Result;
 use async_trait::async_trait;
 use rust_decimal::Decimal;
@@ -9,9 +10,14 @@ use pmbot_core::types::MarketInfo;
 pub struct DiscoveryFilters {
     pub min_liquidity: Decimal,
     pub min_volume: Decimal,
-    pub tags: Vec<String>,
-    pub market_type: String,
-    pub keyword: String,
+    /// Categories to search: ["politics", "sports", "crypto", "finance"]
+    pub categories: Vec<String>,
+    /// Tags per category: {"politics": ["geopolitics", "election"], "sports": ["NFL", "NBA"]}
+    pub tags: HashMap<String, Vec<String>>,
+    /// Free-text search queries
+    pub search_queries: Vec<String>,
+    /// Tags to exclude from results
+    pub exclude_tags: Vec<String>,
     pub active_only: bool,
 }
 
@@ -20,9 +26,10 @@ impl Default for DiscoveryFilters {
         Self {
             min_liquidity: Decimal::ZERO,
             min_volume: Decimal::ZERO,
-            tags: Vec::new(),
-            market_type: "5min".into(),
-            keyword: "BTC".into(),
+            categories: vec!["crypto".into()],
+            tags: HashMap::new(),
+            search_queries: Vec::new(),
+            exclude_tags: Vec::new(),
             active_only: true,
         }
     }
@@ -79,20 +86,28 @@ mod tests {
     use chrono::Utc;
     use pmbot_core::types::{MarketId, TokenId};
     use rust_decimal_macros::dec;
+    use std::collections::HashMap;
 
     fn make_market(id: &str, liquidity: Decimal, volume: Decimal, active: bool) -> MarketInfo {
+        let mut outcome_prices = HashMap::new();
+        outcome_prices.insert("Yes".to_string(), dec!(0.5));
+        outcome_prices.insert("No".to_string(), dec!(0.5));
+        
         MarketInfo {
             id: MarketId(id.into()),
             question: format!("Market {id}?"),
             slug: id.into(),
             outcomes: vec!["Yes".into(), "No".into()],
             token_ids: vec![TokenId(format!("{id}-yes")), TokenId(format!("{id}-no"))],
+            outcome_prices,
             condition_id: format!("cond-{id}"),
             neg_risk: false,
             active,
             end_date: Some(Utc::now() + chrono::Duration::hours(1)),
             liquidity,
             volume,
+            category: "Test".into(),
+            tags: vec!["test".into()],
         }
     }
 

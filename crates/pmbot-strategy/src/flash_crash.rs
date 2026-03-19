@@ -115,6 +115,8 @@ impl Strategy for FlashCrash {
             None => return Vec::new(),
         };
 
+        let outcome = snap.info.outcomes.first().cloned().unwrap_or_default();
+
         // 2. Need price history.
         if snap.price_history.is_empty() {
             return Vec::new();
@@ -179,6 +181,7 @@ impl Strategy for FlashCrash {
                         strategy: "flash_crash",
                         market_id: market_id.clone(),
                         token_id,
+                        outcome,
                         side: Side::Buy,
                         size: dec!(1),
                         price: snap.mid_price,
@@ -289,6 +292,7 @@ impl Strategy for FlashCrash {
             wins: 0,
             losses: 0,
             total_pnl: Decimal::ZERO,
+            pnl_history: Vec::new(),
             custom: vec![
                 (
                     "drop_threshold",
@@ -365,6 +369,9 @@ mod tests {
                     end_date: None,
                     liquidity: dec!(10000),
                     volume: dec!(50000),
+            outcome_prices: std::collections::HashMap::new(),
+            category: "Test".into(),
+            tags: vec!["test".into()],
                 },
                 book: Arc::new(book),
                 mid_price,
@@ -500,6 +507,9 @@ mod tests {
             end_date: None,
             liquidity: dec!(10000),
             volume: dec!(50000),
+            outcome_prices: std::collections::HashMap::new(),
+            category: "Test".into(),
+            tags: vec!["test".into()],
         };
 
         strat.on_market_change(&MarketId("m-1".into()), &new_market);

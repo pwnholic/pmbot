@@ -90,20 +90,28 @@ mod tests {
     use chrono::{Duration as ChronoDuration, Utc};
     use pmbot_core::types::{MarketId, TokenId};
     use rust_decimal_macros::dec;
+    use std::collections::HashMap;
 
     fn make_market(end_offset_secs: i64) -> MarketInfo {
+        let mut outcome_prices = HashMap::new();
+        outcome_prices.insert("Yes".to_string(), dec!(0.5));
+        outcome_prices.insert("No".to_string(), dec!(0.5));
+
         MarketInfo {
             id: MarketId("test-market".into()),
             question: "Test?".into(),
             slug: "test".into(),
             outcomes: vec!["Yes".into(), "No".into()],
             token_ids: vec![TokenId("token-yes".into()), TokenId("token-no".into())],
+            outcome_prices,
             condition_id: "cond-123".into(),
             neg_risk: false,
             active: true,
             end_date: Some(Utc::now() + ChronoDuration::seconds(end_offset_secs)),
             liquidity: dec!(10000),
             volume: dec!(50000),
+            category: "Test".into(),
+            tags: vec!["test".into()],
         }
     }
 

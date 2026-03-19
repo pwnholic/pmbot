@@ -157,6 +157,7 @@ mod tests {
             strategy: "test",
             market_id: MarketId("m1".into()),
             token_id: TokenId("t1".into()),
+            outcome: "Yes".to_string(),
             side: Side::Buy,
             size,
             price: Some(price),

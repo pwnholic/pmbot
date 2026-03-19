@@ -54,6 +54,10 @@ impl Reconciler {
                     let _ = local.partial_fill(exchange_order.filled, remaining);
                     events.push(ExecutionEvent::OrderPartialFill {
                         order_id: oid.clone(),
+                        signal_id: local.signal_id,
+                        market_id: local.market_id.clone(),
+                        side: local.side,
+                        price: local.price,
                         filled: exchange_order.filled,
                         remaining,
                     });

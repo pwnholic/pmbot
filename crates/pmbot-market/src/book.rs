@@ -1,12 +1,21 @@
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
+use std::collections::HashMap;
 
 use pmbot_core::math::book_imbalance;
 use pmbot_core::types::{Level, MarketId, OrderbookSnapshot, Side, TokenId};
 
-/// Local orderbook maintaining sorted bids (descending) and asks (ascending).
+/// Order book side for a single outcome token.
+#[derive(Debug, Clone, Default)]
+pub struct OrderBookSide {
+    pub bids: Vec<Level>,
+    pub asks: Vec<Level>,
+}
+
+/// Local orderbook maintaining sorted bids (descending) and asks (ascending)
+/// for a single outcome token.
 #[derive(Debug, Clone)]
-pub struct LocalBook {
+pub struct SingleBook {
     market_id: MarketId,
     token_id: TokenId,
     bids: Vec<Level>,
@@ -14,8 +23,7 @@ pub struct LocalBook {
     last_update: DateTime<Utc>,
 }
 
-impl LocalBook {
-    /// Create an empty book for the given market and token.
+impl SingleBook {
     pub fn new(market_id: MarketId, token_id: TokenId) -> Self {
         Self {
             market_id,
@@ -26,25 +34,15 @@ impl LocalBook {
         }
     }
 
-    /// Replace the entire book with a new snapshot.
     pub fn apply_snapshot(&mut self, bids: Vec<Level>, asks: Vec<Level>, ts: DateTime<Utc>) {
         self.bids = bids;
         self.asks = asks;
-        // Ensure sorting invariants
-        self.bids
-            .sort_by(|a, b| b.price.cmp(&a.price)); // descending
-        self.asks
-            .sort_by(|a, b| a.price.cmp(&b.price)); // ascending
+        self.bids.sort_by(|a, b| b.price.cmp(&a.price));
+        self.asks.sort_by(|a, b| a.price.cmp(&b.price));
         self.last_update = ts;
     }
 
-    /// Apply incremental delta updates. A size of zero means remove that level.
-    pub fn apply_delta(
-        &mut self,
-        bid_updates: &[Level],
-        ask_updates: &[Level],
-        ts: DateTime<Utc>,
-    ) {
+    pub fn apply_delta(&mut self, bid_updates: &[Level], ask_updates: &[Level], ts: DateTime<Utc>) {
         for update in bid_updates {
             Self::apply_side_delta(&mut self.bids, update, true);
         }
@@ -54,10 +52,7 @@ impl LocalBook {
         self.last_update = ts;
     }
 
-    /// Apply a single level update to one side of the book.
-    /// `descending` = true for bids, false for asks.
     fn apply_side_delta(levels: &mut Vec<Level>, update: &Level, descending: bool) {
-        // Find existing level at this price
         if let Some(pos) = levels.iter().position(|l| l.price == update.price) {
             if update.size.is_zero() {
                 levels.remove(pos);
@@ -65,7 +60,6 @@ impl LocalBook {
                 levels[pos].size = update.size;
             }
         } else if !update.size.is_zero() {
-            // Insert in sorted position
             let insert_pos = if descending {
                 levels
                     .iter()
@@ -81,7 +75,6 @@ impl LocalBook {
         }
     }
 
-    /// Return the current state as an immutable snapshot.
     pub fn snapshot(&self) -> OrderbookSnapshot {
         OrderbookSnapshot {
             market_id: self.market_id.clone(),
@@ -92,15 +85,10 @@ impl LocalBook {
         }
     }
 
-    /// Compute book imbalance using the top N levels.
     pub fn imbalance(&self, levels: usize) -> Decimal {
         book_imbalance(&self.bids, &self.asks, levels)
     }
 
-    /// Cumulative volume up to (and including) the given price on the specified side.
-    ///
-    /// For bids: sum sizes where level price >= target price.
-    /// For asks: sum sizes where level price <= target price.
     pub fn depth_at_price(&self, price: Decimal, side: Side) -> Decimal {
         match side {
             Side::Buy => self
@@ -118,19 +106,246 @@ impl LocalBook {
         }
     }
 
-    /// Access to the market ID.
+    pub fn best_bid(&self) -> Option<Decimal> {
+        self.bids.first().map(|l| l.price)
+    }
+
+    pub fn best_ask(&self) -> Option<Decimal> {
+        self.asks.first().map(|l| l.price)
+    }
+
     pub fn market_id(&self) -> &MarketId {
         &self.market_id
     }
 
-    /// Access to the token ID.
     pub fn token_id(&self) -> &TokenId {
         &self.token_id
     }
 
-    /// Timestamp of the last update.
     pub fn last_update(&self) -> DateTime<Utc> {
         self.last_update
+    }
+}
+
+/// Multi-outcome order book for a market.
+///
+/// For binary markets: 2 books (Yes/No)
+/// For multi-option markets: N books (one per outcome)
+#[derive(Debug, Clone)]
+pub struct LocalBook {
+    market_id: MarketId,
+    books: HashMap<TokenId, OrderBookSide>,
+    primary_token_id: Option<TokenId>,
+    last_update: DateTime<Utc>,
+}
+
+impl LocalBook {
+    pub fn new(market_id: MarketId, primary_token_id: TokenId) -> Self {
+        let mut books = HashMap::new();
+        books.insert(primary_token_id.clone(), OrderBookSide::default());
+        Self {
+            market_id,
+            books,
+            primary_token_id: Some(primary_token_id),
+            last_update: Utc::now(),
+        }
+    }
+
+    pub fn from_tokens(market_id: MarketId, token_ids: &[TokenId]) -> Self {
+        let mut books = HashMap::new();
+        for token_id in token_ids {
+            books.insert(token_id.clone(), OrderBookSide::default());
+        }
+        Self {
+            market_id,
+            books,
+            primary_token_id: token_ids.first().cloned(),
+            last_update: Utc::now(),
+        }
+    }
+
+    pub fn set_primary_token(&mut self, token_id: TokenId) {
+        self.primary_token_id = Some(token_id);
+    }
+
+    pub fn primary_token_id(&self) -> Option<&TokenId> {
+        self.primary_token_id.as_ref()
+    }
+
+    pub fn update(
+        &mut self,
+        token_id: &TokenId,
+        bids: Vec<Level>,
+        asks: Vec<Level>,
+        ts: DateTime<Utc>,
+    ) {
+        let side = self
+            .books
+            .entry(token_id.clone())
+            .or_insert_with(OrderBookSide::default);
+        side.bids = bids;
+        side.asks = asks;
+        side.bids.sort_by(|a, b| b.price.cmp(&a.price));
+        side.asks.sort_by(|a, b| a.price.cmp(&b.price));
+        self.last_update = ts;
+    }
+
+    pub fn apply_delta(
+        &mut self,
+        token_id: &TokenId,
+        bid_updates: &[Level],
+        ask_updates: &[Level],
+        ts: DateTime<Utc>,
+    ) {
+        let side = self
+            .books
+            .entry(token_id.clone())
+            .or_insert_with(OrderBookSide::default);
+        for update in bid_updates {
+            SingleBook::apply_side_delta(&mut side.bids, update, true);
+        }
+        for update in ask_updates {
+            SingleBook::apply_side_delta(&mut side.asks, update, false);
+        }
+        self.last_update = ts;
+    }
+
+    pub fn price_for_outcome(&self, token_id: &TokenId) -> Option<Decimal> {
+        self.books
+            .get(token_id)
+            .and_then(|s| s.bids.first().map(|l| l.price))
+    }
+
+    pub fn best_bid_for(&self, token_id: &TokenId) -> Option<Decimal> {
+        self.books
+            .get(token_id)
+            .and_then(|s| s.bids.first().map(|l| l.price))
+    }
+
+    pub fn best_ask_for(&self, token_id: &TokenId) -> Option<Decimal> {
+        self.books
+            .get(token_id)
+            .and_then(|s| s.asks.first().map(|l| l.price))
+    }
+
+    pub fn spread_for(&self, token_id: &TokenId) -> Option<Decimal> {
+        let side = self.books.get(token_id)?;
+        let bid = side.bids.first()?;
+        let ask = side.asks.first()?;
+        Some(ask.price - bid.price)
+    }
+
+    pub fn imbalance_for(&self, token_id: &TokenId, levels: usize) -> Option<Decimal> {
+        let side = self.books.get(token_id)?;
+        Some(book_imbalance(&side.bids, &side.asks, levels))
+    }
+
+    pub fn books(&self) -> &HashMap<TokenId, OrderBookSide> {
+        &self.books
+    }
+
+    pub fn market_id(&self) -> &MarketId {
+        &self.market_id
+    }
+
+    pub fn last_update(&self) -> DateTime<Utc> {
+        self.last_update
+    }
+
+    pub fn token_ids(&self) -> impl Iterator<Item = &TokenId> {
+        self.books.keys()
+    }
+
+    pub fn num_outcomes(&self) -> usize {
+        self.books.len()
+    }
+
+    pub fn is_binary(&self) -> bool {
+        self.books.len() == 2
+    }
+
+    pub fn is_multi_option(&self) -> bool {
+        self.books.len() > 2
+    }
+
+    pub fn snapshot_for(&self, token_id: &TokenId) -> Option<OrderbookSnapshot> {
+        let side = self.books.get(token_id)?;
+        Some(OrderbookSnapshot {
+            market_id: self.market_id.clone(),
+            token_id: token_id.clone(),
+            bids: side.bids.clone(),
+            asks: side.asks.clone(),
+            timestamp: self.last_update,
+        })
+    }
+
+    pub fn snapshot(&self) -> OrderbookSnapshot {
+        match &self.primary_token_id {
+            Some(token_id) => self
+                .snapshot_for(token_id)
+                .unwrap_or_else(|| OrderbookSnapshot {
+                    market_id: self.market_id.clone(),
+                    token_id: token_id.clone(),
+                    bids: vec![],
+                    asks: vec![],
+                    timestamp: self.last_update,
+                }),
+            None => OrderbookSnapshot {
+                market_id: self.market_id.clone(),
+                token_id: TokenId("unknown".into()),
+                bids: vec![],
+                asks: vec![],
+                timestamp: self.last_update,
+            },
+        }
+    }
+
+    pub fn apply_snapshot(&mut self, bids: Vec<Level>, asks: Vec<Level>, ts: DateTime<Utc>) {
+        if let Some(token_id) = self.primary_token_id.clone() {
+            self.update(&token_id, bids, asks, ts);
+        }
+    }
+
+    pub fn apply_delta_no_token(
+        &mut self,
+        bid_updates: &[Level],
+        ask_updates: &[Level],
+        ts: DateTime<Utc>,
+    ) {
+        if let Some(token_id) = self.primary_token_id.clone() {
+            self.apply_delta(&token_id, bid_updates, ask_updates, ts);
+        }
+    }
+
+    pub fn imbalance(&self, levels: usize) -> Decimal {
+        match &self.primary_token_id {
+            Some(token_id) => self
+                .imbalance_for(token_id, levels)
+                .unwrap_or(Decimal::ZERO),
+            None => Decimal::ZERO,
+        }
+    }
+
+    pub fn best_bid(&self) -> Option<Decimal> {
+        self.primary_token_id
+            .as_ref()
+            .and_then(|t| self.best_bid_for(t))
+    }
+
+    pub fn best_ask(&self) -> Option<Decimal> {
+        self.primary_token_id
+            .as_ref()
+            .and_then(|t| self.best_ask_for(t))
+    }
+
+    pub fn mid_price(&self) -> Option<Decimal> {
+        let bid = self.best_bid()?;
+        let ask = self.best_ask()?;
+        Some((bid + ask) / Decimal::from(2))
+    }
+
+    pub fn token_id(&self) -> Option<&TokenId> {
+        self.primary_token_id.as_ref()
     }
 }
 
@@ -140,9 +355,16 @@ mod tests {
     use rust_decimal_macros::dec;
 
     fn make_book() -> LocalBook {
-        LocalBook::new(
+        LocalBook::new(MarketId("test-market".into()), TokenId("token-yes".into()))
+    }
+
+    fn make_book_with_tokens(token_ids: &[&str]) -> LocalBook {
+        LocalBook::from_tokens(
             MarketId("test-market".into()),
-            TokenId("test-token".into()),
+            &token_ids
+                .iter()
+                .map(|s| TokenId(s.to_string()))
+                .collect::<Vec<_>>(),
         )
     }
 
@@ -151,42 +373,157 @@ mod tests {
     }
 
     #[test]
-    fn test_new_book_is_empty() {
+    fn test_new_book_has_primary_token() {
         let book = make_book();
-        let snap = book.snapshot();
-        assert!(snap.bids.is_empty());
-        assert!(snap.asks.is_empty());
+        assert_eq!(book.num_outcomes(), 1);
+        assert!(book.primary_token_id().is_some());
     }
 
     #[test]
-    fn test_apply_snapshot_sorts_correctly() {
+    fn test_from_tokens_creates_books() {
+        let book = make_book_with_tokens(&["token-yes", "token-no"]);
+        assert_eq!(book.num_outcomes(), 2);
+        assert!(book.is_binary());
+    }
+
+    #[test]
+    fn test_update_adds_book() {
         let mut book = make_book();
-        let bids = vec![
-            level(dec!(0.40), dec!(10)),
-            level(dec!(0.50), dec!(20)),
-            level(dec!(0.45), dec!(15)),
-        ];
-        let asks = vec![
-            level(dec!(0.60), dec!(10)),
-            level(dec!(0.55), dec!(20)),
-            level(dec!(0.58), dec!(5)),
-        ];
-        let ts = Utc::now();
-        book.apply_snapshot(bids, asks, ts);
+        let token_id = TokenId("token-yes".into());
+
+        book.update(
+            &token_id,
+            vec![level(dec!(0.50), dec!(100))],
+            vec![level(dec!(0.55), dec!(50))],
+            Utc::now(),
+        );
+
+        assert_eq!(book.num_outcomes(), 1);
+        assert_eq!(book.best_bid_for(&token_id), Some(dec!(0.50)));
+        assert_eq!(book.best_ask_for(&token_id), Some(dec!(0.55)));
+    }
+
+    #[test]
+    fn test_price_for_outcome() {
+        let mut book = make_book_with_tokens(&["token-yes", "token-no"]);
+
+        book.update(
+            &TokenId("token-yes".into()),
+            vec![level(dec!(0.60), dec!(100))],
+            vec![level(dec!(0.65), dec!(50))],
+            Utc::now(),
+        );
+
+        assert_eq!(
+            book.price_for_outcome(&TokenId("token-yes".into())),
+            Some(dec!(0.60))
+        );
+        assert_eq!(book.price_for_outcome(&TokenId("token-no".into())), None);
+    }
+
+    #[test]
+    fn test_spread_for() {
+        let mut book = make_book();
+        let token_id = TokenId("token-yes".into());
+
+        book.update(
+            &token_id,
+            vec![level(dec!(0.50), dec!(100))],
+            vec![level(dec!(0.55), dec!(50))],
+            Utc::now(),
+        );
+
+        assert_eq!(book.spread_for(&token_id), Some(dec!(0.05)));
+    }
+
+    #[test]
+    fn test_imbalance_for() {
+        let mut book = make_book();
+        let token_id = TokenId("token-yes".into());
+
+        book.update(
+            &token_id,
+            vec![level(dec!(0.50), dec!(100)), level(dec!(0.49), dec!(50))],
+            vec![level(dec!(0.51), dec!(50)), level(dec!(0.52), dec!(25))],
+            Utc::now(),
+        );
+
+        let imb = book.imbalance_for(&token_id, 1);
+        assert!(imb.is_some());
+        // Top 1: bids=100, asks=50 => (100-50)/(100+50) = 50/150
+        assert_eq!(imb.unwrap(), dec!(50) / dec!(150));
+    }
+
+    #[test]
+    fn test_apply_delta() {
+        let mut book = make_book();
+        let token_id = TokenId("token-yes".into());
+
+        book.update(
+            &token_id,
+            vec![level(dec!(0.50), dec!(100))],
+            vec![level(dec!(0.55), dec!(50))],
+            Utc::now(),
+        );
+
+        book.apply_delta(
+            &token_id,
+            &[level(dec!(0.48), dec!(25))],
+            &[level(dec!(0.55), dec!(75))],
+            Utc::now(),
+        );
+
+        let bids = &book.books().get(&token_id).unwrap().bids;
+        let asks = &book.books().get(&token_id).unwrap().asks;
+
+        assert_eq!(bids.len(), 2);
+        assert_eq!(asks[0].size, dec!(75));
+    }
+
+    #[test]
+    fn test_is_binary_and_multi_option() {
+        let mut book = make_book_with_tokens(&["t1", "t2"]);
+        assert!(book.is_binary());
+        assert!(!book.is_multi_option());
+
+        book.update(&TokenId("t3".into()), vec![], vec![], Utc::now());
+        assert!(!book.is_binary());
+        assert!(book.is_multi_option());
+    }
+
+    #[test]
+    fn test_snapshot_for_primary_token() {
+        let mut book = make_book();
+        book.apply_snapshot(
+            vec![level(dec!(0.50), dec!(100))],
+            vec![level(dec!(0.55), dec!(50))],
+            Utc::now(),
+        );
 
         let snap = book.snapshot();
-        // Bids sorted descending
+        assert_eq!(snap.market_id.0, "test-market");
+        assert_eq!(snap.token_id.0, "token-yes");
+        assert_eq!(snap.bids.len(), 1);
+        assert_eq!(snap.asks.len(), 1);
+    }
+
+    #[test]
+    fn test_backward_compat_apply_snapshot() {
+        let mut book = make_book();
+        let ts = Utc::now();
+        book.apply_snapshot(
+            vec![level(dec!(0.50), dec!(10)), level(dec!(0.45), dec!(5))],
+            vec![level(dec!(0.55), dec!(10))],
+            ts,
+        );
+
+        let snap = book.snapshot();
         assert_eq!(snap.bids[0].price, dec!(0.50));
         assert_eq!(snap.bids[1].price, dec!(0.45));
-        assert_eq!(snap.bids[2].price, dec!(0.40));
-        // Asks sorted ascending
-        assert_eq!(snap.asks[0].price, dec!(0.55));
-        assert_eq!(snap.asks[1].price, dec!(0.58));
-        assert_eq!(snap.asks[2].price, dec!(0.60));
     }
 
     #[test]
-    fn test_apply_delta_add_and_update() {
+    fn test_backward_compat_apply_delta() {
         let mut book = make_book();
         let ts = Utc::now();
         book.apply_snapshot(
@@ -195,8 +532,7 @@ mod tests {
             ts,
         );
 
-        // Add a new bid level, update existing ask size
-        book.apply_delta(
+        book.apply_delta_no_token(
             &[level(dec!(0.48), dec!(5))],
             &[level(dec!(0.55), dec!(20))],
             ts,
@@ -204,84 +540,18 @@ mod tests {
 
         let snap = book.snapshot();
         assert_eq!(snap.bids.len(), 2);
-        assert_eq!(snap.bids[0].price, dec!(0.50));
-        assert_eq!(snap.bids[1].price, dec!(0.48));
-        assert_eq!(snap.bids[1].size, dec!(5));
         assert_eq!(snap.asks[0].size, dec!(20));
     }
 
     #[test]
-    fn test_apply_delta_remove_level() {
+    fn test_mid_price() {
         let mut book = make_book();
-        let ts = Utc::now();
         book.apply_snapshot(
-            vec![level(dec!(0.50), dec!(10)), level(dec!(0.48), dec!(5))],
-            vec![level(dec!(0.55), dec!(10))],
-            ts,
+            vec![level(dec!(0.50), dec!(100))],
+            vec![level(dec!(0.52), dec!(100))],
+            Utc::now(),
         );
 
-        // Remove bid at 0.50 by setting size to 0
-        book.apply_delta(&[level(dec!(0.50), dec!(0))], &[], ts);
-
-        let snap = book.snapshot();
-        assert_eq!(snap.bids.len(), 1);
-        assert_eq!(snap.bids[0].price, dec!(0.48));
-    }
-
-    #[test]
-    fn test_imbalance() {
-        let mut book = make_book();
-        let ts = Utc::now();
-        book.apply_snapshot(
-            vec![level(dec!(0.50), dec!(100)), level(dec!(0.49), dec!(50))],
-            vec![level(dec!(0.51), dec!(50)), level(dec!(0.52), dec!(25))],
-            ts,
-        );
-
-        // Top 1 level: bids=100, asks=50 => (100-50)/(100+50) = 50/150
-        let imb = book.imbalance(1);
-        assert_eq!(imb, dec!(50) / dec!(150));
-
-        // Top 2 levels: bids=150, asks=75 => 75/225 = 1/3
-        let imb2 = book.imbalance(2);
-        assert_eq!(imb2, dec!(75) / dec!(225));
-    }
-
-    #[test]
-    fn test_depth_at_price_bids() {
-        let mut book = make_book();
-        let ts = Utc::now();
-        book.apply_snapshot(
-            vec![
-                level(dec!(0.50), dec!(100)),
-                level(dec!(0.49), dec!(50)),
-                level(dec!(0.48), dec!(25)),
-            ],
-            vec![],
-            ts,
-        );
-
-        // Depth at 0.49 on bid side: prices >= 0.49 => 0.50 (100) + 0.49 (50) = 150
-        assert_eq!(book.depth_at_price(dec!(0.49), Side::Buy), dec!(150));
-        // Depth at 0.50: only top level
-        assert_eq!(book.depth_at_price(dec!(0.50), Side::Buy), dec!(100));
-    }
-
-    #[test]
-    fn test_depth_at_price_asks() {
-        let mut book = make_book();
-        let ts = Utc::now();
-        book.apply_snapshot(
-            vec![],
-            vec![
-                level(dec!(0.55), dec!(100)),
-                level(dec!(0.56), dec!(50)),
-                level(dec!(0.57), dec!(25)),
-            ],
-            ts,
-        );
-
-        // Depth at 0.56 on ask side: prices <= 0.56 => 0.55 (100) + 0.56 (50) = 150
-        assert_eq!(book.depth_at_price(dec!(0.56), Side::Sell), dec!(150));
+        assert_eq!(book.mid_price(), Some(dec!(0.51)));
     }
 }

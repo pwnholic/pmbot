@@ -139,6 +139,8 @@ impl Strategy for LeadLag {
             None => return Vec::new(),
         };
 
+        let outcome = snap.info.outcomes.first().cloned().unwrap_or_default();
+
         // Set anchor on first observation.
         if self.anchor_price.is_none() {
             self.anchor_price = Some(btc_price);
@@ -185,6 +187,7 @@ impl Strategy for LeadLag {
                             strategy: "lead_lag",
                             market_id: market_id.clone(),
                             token_id,
+                            outcome: outcome.clone(),
                             side: direction,
                             size: dec!(1),
                             price: snap.mid_price,
@@ -226,6 +229,7 @@ impl Strategy for LeadLag {
                         strategy: "lead_lag",
                         market_id: market_id.clone(),
                         token_id,
+                        outcome: outcome.clone(),
                         side: direction,
                         size: dec!(1), // Position sizing is the risk actor's job.
                         price: snap.mid_price,
@@ -348,6 +352,7 @@ impl Strategy for LeadLag {
             wins: 0,
             losses: 0,
             total_pnl: Decimal::ZERO,
+            pnl_history: Vec::new(),
             custom: vec![
                 (
                     "threshold",
@@ -422,6 +427,9 @@ mod tests {
                     end_date: None,
                     liquidity: dec!(10000),
                     volume: dec!(50000),
+            outcome_prices: std::collections::HashMap::new(),
+            category: "Test".into(),
+            tags: vec!["test".into()],
                 },
                 book: Arc::new(book),
                 mid_price: market_mid,
@@ -576,6 +584,9 @@ mod tests {
             end_date: None,
             liquidity: dec!(10000),
             volume: dec!(50000),
+            outcome_prices: std::collections::HashMap::new(),
+            category: "Test".into(),
+            tags: vec!["test".into()],
         };
 
         strat.on_market_change(&MarketId("m-1".into()), &new_market);
