@@ -13,13 +13,15 @@ use rust_decimal::Decimal;
 use pmbot_core::messages::{
     ExecutionEvent, FeedEvent, MarketEvent, MarketSnapshot, Position, WorldState,
 };
-use pmbot_core::types::{MarketId, OpenOrder, PricePoint, SpotPrice, Symbol};
+use pmbot_core::types::{MarketId, MarketInfo, OpenOrder, PricePoint, SpotPrice, Symbol};
 use std::time::Duration;
 
 /// Accumulates events and builds immutable [`WorldState`] snapshots.
 pub struct WorldStateBuilder {
     active_market_id: Option<MarketId>,
     markets: HashMap<MarketId, MarketSnapshot>,
+    /// All discovered markets available for trading (for TUI search).
+    discovered_markets: Vec<MarketInfo>,
     positions: Vec<Position>,
     open_orders: Vec<OpenOrder>,
     balance: Decimal,
@@ -34,6 +36,7 @@ impl WorldStateBuilder {
         Self {
             active_market_id: None,
             markets: HashMap::new(),
+            discovered_markets: Vec::new(),
             positions: Vec::new(),
             open_orders: Vec::new(),
             balance: initial_balance,
@@ -103,6 +106,10 @@ impl WorldStateBuilder {
             }
             MarketEvent::Connected | MarketEvent::Disconnected => {
                 // No state changes needed for connection events.
+            }
+            MarketEvent::MarketsDiscovered { markets } => {
+                // Store all discovered markets for TUI search.
+                self.discovered_markets = markets.clone();
             }
         }
     }
@@ -206,6 +213,7 @@ impl WorldStateBuilder {
         WorldState {
             active_market_id: self.active_market_id.clone(),
             markets: self.markets.clone(),
+            discovered_markets: self.discovered_markets.clone(),
             positions: self.positions.clone(),
             open_orders: self.open_orders.clone(),
             balance: self.balance,

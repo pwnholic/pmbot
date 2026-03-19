@@ -647,6 +647,7 @@ fn default_world() -> WorldState {
     WorldState {
         active_market_id: None,
         markets: HashMap::new(),
+        discovered_markets: vec![],
         positions: vec![],
         open_orders: vec![],
         balance: Decimal::new(1_000_000, 0), // large default so tests pass
@@ -962,6 +963,7 @@ mod tests {
         let new_world = WorldState {
             active_market_id: None,
             markets: HashMap::new(),
+            discovered_markets: vec![],
             positions: vec![],
             open_orders: vec![],
             balance: dec!(500),

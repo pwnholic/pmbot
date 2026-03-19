@@ -28,6 +28,10 @@ pub enum MarketEvent {
         old: MarketId,
         new: MarketInfo,
     },
+    /// All discovered markets available for trading.
+    MarketsDiscovered {
+        markets: Vec<MarketInfo>,
+    },
     LatencyUpdate {
         latency: Duration,
     },
@@ -200,6 +204,8 @@ pub enum ExecutionEvent {
 pub struct WorldState {
     pub active_market_id: Option<MarketId>,
     pub markets: std::collections::HashMap<MarketId, MarketSnapshot>,
+    /// All discovered markets available for trading (for TUI search).
+    pub discovered_markets: Vec<MarketInfo>,
     pub positions: Vec<Position>,
     pub open_orders: Vec<OpenOrder>,
     pub balance: Decimal,

@@ -96,12 +96,17 @@ impl MarketActor {
         };
 
         let raw_markets = discovery.discover(&filters).await?;
-        let markets = self.viable_markets(raw_markets);
+        let markets = self.viable_markets(raw_markets.clone());
 
         if markets.is_empty() {
             warn!("no viable markets available matching filters (all expired or missing end_date)");
             return Err(anyhow::anyhow!("no viable markets available"));
         }
+
+        // Emit discovered markets event for TUI search
+        let _ = self.events_tx.send(MarketEvent::MarketsDiscovered {
+            markets: raw_markets.clone(),
+        });
 
         // Pick the market with the nearest expiry (for time-bounded strategies like 5min markets)
         // This ensures we trade the market that will expire soonest, maximizing edge
@@ -166,6 +171,11 @@ impl MarketActor {
                         };
                         match discovery.discover(&filters).await {
                             Ok(raw_markets) => {
+                                // Emit discovered markets for TUI search
+                                let _ = self.events_tx.send(MarketEvent::MarketsDiscovered {
+                                    markets: raw_markets.clone(),
+                                });
+
                                 // Filter to viable (non-expired, with end_date) markets
                                 let mut viable = self.viable_markets(raw_markets);
                                 // Sort by time-to-expiry ascending (nearest expiry first)

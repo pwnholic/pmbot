@@ -130,54 +130,58 @@ impl App {
         let filters = self.filter_menu.to_filters();
 
         let selected_category = self.filter_menu.current_category().to_lowercase();
-        let markets: Vec<MarketInfo> = if let Some(ref world) = self.world {
-            world
-                .markets
-                .values()
-                .filter(|snapshot| {
-                    // Filter by category (skip if "all")
-                    if selected_category != "all" {
-                        let info_category = snapshot.info.category.to_lowercase();
-                        if info_category != selected_category {
-                            // Also check tags for category match
-                            let in_tags = snapshot
-                                .info
-                                .tags
-                                .iter()
-                                .any(|t| t.to_lowercase() == selected_category);
-                            if !in_tags {
-                                return false;
-                            }
-                        }
-                    }
 
-                    // Filter by min_liquidity
-                    if filters.min_liquidity > Decimal::ZERO
-                        && snapshot.info.liquidity < filters.min_liquidity
-                    {
-                        return false;
-                    }
-
-                    // Filter by exclude_tags
-                    for tag in &filters.exclude_tags {
-                        let tag_lower = tag.to_lowercase();
-                        if snapshot
-                            .info
-                            .tags
-                            .iter()
-                            .any(|t: &String| t.to_lowercase() == tag_lower)
-                        {
-                            return false;
-                        }
-                    }
-
-                    true
-                })
-                .map(|snapshot| snapshot.info.clone())
-                .collect()
+        // Use discovered_markets if available, otherwise fall back to active markets
+        let all_markets: Vec<MarketInfo> = if let Some(ref world) = self.world {
+            if world.discovered_markets.is_empty() {
+                // Fall back to active markets
+                world.markets.values().map(|s| s.info.clone()).collect()
+            } else {
+                world.discovered_markets.clone()
+            }
         } else {
             Vec::new()
         };
+
+        let markets: Vec<MarketInfo> = all_markets
+            .into_iter()
+            .filter(|market| {
+                // Filter by category (skip if "all")
+                if selected_category != "all" {
+                    let info_category = market.category.to_lowercase();
+                    if info_category != selected_category {
+                        // Also check tags for category match
+                        let in_tags = market
+                            .tags
+                            .iter()
+                            .any(|t: &String| t.to_lowercase() == selected_category);
+                        if !in_tags {
+                            return false;
+                        }
+                    }
+                }
+
+                // Filter by min_liquidity
+                if filters.min_liquidity > Decimal::ZERO && market.liquidity < filters.min_liquidity
+                {
+                    return false;
+                }
+
+                // Filter by exclude_tags
+                for tag in &filters.exclude_tags {
+                    let tag_lower = tag.to_lowercase();
+                    if market
+                        .tags
+                        .iter()
+                        .any(|t: &String| t.to_lowercase() == tag_lower)
+                    {
+                        return false;
+                    }
+                }
+
+                true
+            })
+            .collect();
 
         self.search_state.set_markets(markets);
     }
@@ -193,6 +197,7 @@ mod tests {
         WorldState {
             active_market_id: None,
             markets: HashMap::new(),
+            discovered_markets: Vec::new(),
             positions: Vec::new(),
             open_orders: Vec::new(),
             balance: dec!(1000),

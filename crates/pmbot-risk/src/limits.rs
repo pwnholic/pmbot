@@ -170,6 +170,7 @@ mod tests {
         WorldState {
             active_market_id: None,
             markets: HashMap::new(),
+            discovered_markets: vec![],
             positions: vec![],
             open_orders: vec![],
             balance,

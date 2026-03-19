@@ -458,6 +458,7 @@ mod tests {
         let world = WorldState {
             active_market_id: None,
             markets: HashMap::new(),
+            discovered_markets: vec![],
             positions: Vec::new(),
             open_orders: Vec::new(),
             balance: dec!(1000),
